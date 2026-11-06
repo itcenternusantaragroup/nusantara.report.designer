@@ -132,6 +132,16 @@ impl PageSetupDialog {
                     });
 
                     ui.add_space(8.0);
+                    ui.heading("Columns");
+                    ui.horizontal(|ui| {
+                        ui.label("Columns:");
+                        ui.add(egui::DragValue::new(&mut page.columns).speed(0.2).range(1..=6));
+                        ui.label("Gap:");
+                        ui.add(egui::DragValue::new(&mut page.column_gap).speed(0.5).range(0.0..=30.0).suffix(" mm"));
+                    });
+                    ui.label(egui::RichText::new("Body bands flow down one column, then into the next.").weak());
+
+                    ui.add_space(8.0);
                     ui.heading("Watermark");
                     let mut enabled = page.watermark.is_some();
                     if ui.checkbox(&mut enabled, "Show a text watermark on every sheet").changed() {

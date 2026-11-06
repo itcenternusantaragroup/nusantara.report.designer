@@ -454,6 +454,12 @@ fn build_page(pv: &Value, unit: f32) -> Page {
     page.height = w.max(h);
     page.orientation = if w > h { Orientation::Landscape } else { Orientation::Portrait };
 
+    if let Some(cols) = num_of(pv, "Columns") {
+        page.columns = (cols as u32).max(1);
+    }
+    if let Some(gap) = num_of(pv, "ColumnGaps") {
+        page.column_gap = gap as f32 * unit;
+    }
     if let Some(wm) = pv.get("Watermark").and_then(|x| serde_json::from_value(x.clone()).ok()) {
         page.watermark = Some(wm);
     }
@@ -515,6 +521,7 @@ fn collect_components(page: &mut Page, comps: &Value, origin: (f32, f32), parent
                 height: rect.h,
                 data_source: if ds.is_empty() { None } else { Some(ds.to_string()) },
                 group_by: group_condition(cv),
+                keep_together: false,
             });
             // Band children are positioned from the band's top-left, inside the page margins.
             let band_origin = (page.margins.left + rect.x, rect.y);

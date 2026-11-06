@@ -95,6 +95,7 @@ impl MrtHandler {
                 let band_json = json!({
                     "Ident": band.band_type.sti_ident(),
                     "Condition": { "Value": band.group_by.as_ref().map(|g| format!("{{{g}}}")).unwrap_or_default() },
+                    "KeepTogether": band.keep_together,
                     "Name": band.name,
                     "ClientRectangle": format!("0,{band_top_cm:.2},{printable_w_cm:.2},{band_height_cm:.2}"),
                     "Interaction": { "Ident": "StiInteraction" },
@@ -132,6 +133,8 @@ impl MrtHandler {
                     Orientation::Landscape => "Landscape",
                 },
                 "Watermark": serde_json::to_value(&page.watermark).unwrap_or(Value::Null),
+                "Columns": page.columns.max(1),
+                "ColumnGaps": page.column_gap / 10.0, // the file stores centimetres
                 "Guides": serde_json::to_value(&page.guides).unwrap_or(Value::Null),
                 "Margins": {
                     "Left": m_left_cm,

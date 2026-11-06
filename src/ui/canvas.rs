@@ -474,6 +474,7 @@ impl CanvasView {
                             height: 15.0,
                             data_source: None,
                             group_by: None,
+                            keep_together: false,
                         };
 
                         let new_id = band.id.clone();

@@ -202,6 +202,15 @@ fn paginate(app: &ReportDesignerApp, pi: usize, page: &Page) -> Vec<Sheet> {
     let page_footer = find(BandType::PageFooter);
     let footer_h = page_footer.map_or(0.0, |b| b.height);
 
+    // Columns: the printable width is split evenly; very narrow columns fall back to one.
+    let print_w = page.printable_width();
+    let mut columns = page.columns.max(1);
+    let mut col_w = (print_w - page.column_gap * (columns as f32 - 1.0)) / columns as f32;
+    if col_w < 10.0 {
+        columns = 1;
+        col_w = print_w;
+    }
+
     let mut flow = Flow {
         page,
         pi,
@@ -213,6 +222,12 @@ fn paginate(app: &ReportDesignerApp, pi: usize, page: &Page) -> Vec<Sheet> {
         items: Vec::new(),
         y: page.margins.top,
         body: false,
+        columns,
+        col: 0,
+        col_w,
+        gap: page.column_gap,
+        left: page.margins.left,
+        print_w,
     };
     flow.new_sheet();
 
@@ -319,6 +334,15 @@ fn flow_groups(flow: &mut Flow, page: &Page, plan: &GroupPlan) {
         let last = order[end];
         let name = plan.source.name.clone();
 
+        // Keep the header with its first row; with keep-together, the whole group when it fits on a sheet.
+        let rows_here = (end - start + 1) as f32;
+        let row_h: f32 = plan.data_bands.iter().map(|b| b.height).sum();
+        let footer_h = plan.footer.map_or(0.0, |b| b.height);
+        let page_room = flow.limit - (flow.top + flow.header_h);
+        let whole = plan.header.height + row_h * rows_here + footer_h;
+        let need = if plan.header.keep_together && whole <= page_room { whole } else { plan.header.height + row_h };
+        flow.keep(need);
+
         flow.flow(plan.header, &HashMap::from([(name.clone(), first)]));
         for &row in &order[start..=end] {
             for band in &plan.data_bands {
@@ -333,6 +357,14 @@ fn flow_groups(flow: &mut Flow, page: &Page, plan: &GroupPlan) {
 }
 struct Flow<'a> {
     page: &'a Page,
+    /// Number of body columns and the current one (0-based).
+    columns: u32,
+    col: u32,
+    /// Width of one column, the gap between columns, the left margin and the printable width (mm).
+    col_w: f32,
+    gap: f32,
+    left: f32,
+    print_w: f32,
     pi: usize,
     top: f32,
     header: Option<&'a Band>,
@@ -358,15 +390,44 @@ impl<'a> Flow<'a> {
         }
         self.y = self.top + self.header_h;
         self.body = false;
+        self.col = 0;
     }
 
     fn flow(&mut self, band: &Band, rows: &HashMap<String, usize>) {
         if self.body && self.y + band.height > self.limit {
-            self.new_sheet();
+            self.next_slot();
         }
-        place_into(self.page, band, self.y, rows, &mut self.items);
+        let xf = self.column_transform();
+        place_with(self.page, band, self.y, rows, &mut self.items, xf);
         self.y += band.height;
         self.body = true;
+    }
+
+    /// Moves to the next column on this sheet, or to a new sheet after the last column.
+    fn next_slot(&mut self) {
+        if self.col + 1 < self.columns {
+            self.col += 1;
+            self.y = self.top + self.header_h;
+        } else {
+            self.new_sheet();
+        }
+    }
+
+    /// Makes sure `need` mm of body space is free here, moving on first when it is not.
+    fn keep(&mut self, need: f32) {
+        if self.body && self.y + need > self.limit {
+            self.next_slot();
+        }
+    }
+
+    /// Where a body band goes in the current column: (scale, from x, to x), or None for one column.
+    fn column_transform(&self) -> Option<(f32, f32, f32)> {
+        if self.columns <= 1 {
+            return None;
+        }
+        let scale = self.col_w / self.print_w;
+        let to = self.left + self.col as f32 * (self.col_w + self.gap);
+        Some((scale, self.left, to))
     }
 
     fn finish(mut self, page_footer: Option<&Band>) -> Vec<Sheet> {
@@ -403,10 +464,26 @@ fn inferred_source<'a>(page: &Page, band: &Band, dict: &'a Dictionary) -> Option
 
 /// Copies the components of `band` into `items`, moved so the band starts at `y`.
 fn place_into(page: &Page, band: &Band, y: f32, rows: &HashMap<String, usize>, items: &mut Vec<Item>) {
+    place_with(page, band, y, rows, items, None);
+}
+
+/// Like place_into; with xf = (scale, from x, to x) the band is moved into a column and scaled to its width.
+fn place_with(
+    page: &Page,
+    band: &Band,
+    y: f32,
+    rows: &HashMap<String, usize>,
+    items: &mut Vec<Item>,
+    xf: Option<(f32, f32, f32)>,
+) {
     let dy = y - band.top;
     for c in page.components.iter().filter(|c| c.parent_band_id.as_deref() == Some(band.id.as_str())) {
         let mut comp = c.clone();
         comp.rect.y += dy;
+        if let Some((scale, from, to)) = xf {
+            comp.rect.x = to + (comp.rect.x - from) * scale;
+            comp.rect.w *= scale;
+        }
         items.push(Item { comp, rows: rows.clone() });
     }
 }
@@ -778,6 +855,7 @@ mod tests {
             height: 5.0,
             data_source: None,
             group_by: Some("detail.tgl".into()),
+            keep_together: false,
         });
         page.bands.push(Band {
             id: "db".into(),
@@ -787,6 +865,7 @@ mod tests {
             height: 5.0,
             data_source: Some("detail".into()),
             group_by: None,
+            keep_together: false,
         });
         let mut data_cell = Component::default();
         data_cell.parent_band_id = Some("db".into());
@@ -869,5 +948,100 @@ mod tests {
         for line in unresolved.iter().take(40) {
             println!("  {line}");
         }
+    }
+}
+
+#[cfg(test)]
+mod pagination_tests {
+    use super::*;
+    use crate::model::{Band, BandType, Column, DataSource, Report};
+
+    fn band(id: &str, t: BandType, top: f32, height: f32, source: Option<&str>, group: Option<&str>, keep: bool) -> Band {
+        Band {
+            id: id.into(),
+            name: id.into(),
+            band_type: t,
+            top,
+            height,
+            data_source: source.map(|s| s.into()),
+            group_by: group.map(|s| s.into()),
+            keep_together: keep,
+        }
+    }
+
+    fn comp_in(band_id: &str, text: &str) -> Component {
+        let mut c = Component::default();
+        c.parent_band_id = Some(band_id.into());
+        c.text = text.into();
+        c.rect = RectMm::new(10.0, 0.0, 100.0, 8.0);
+        c
+    }
+
+    fn source(rows: &[(&str, &str)]) -> DataSource {
+        let col = |n: &str| Column { name: n.into(), data_type: "System.String".into() };
+        DataSource {
+            name: "d".into(),
+            alias: "d".into(),
+            columns: vec![col("g"), col("n")],
+            rows: rows
+                .iter()
+                .map(|(g, n)| HashMap::from([("g".to_string(), g.to_string()), ("n".to_string(), n.to_string())]))
+                .collect(),
+        }
+    }
+
+    fn app_with(rows: &[(&str, &str)]) -> ReportDesignerApp {
+        let mut app = ReportDesignerApp::new(None, None);
+        app.report = Report::blank();
+        app.report.dictionary.data_sources = vec![source(rows)];
+        app
+    }
+
+    #[test]
+    fn second_column_takes_rows_before_a_new_sheet() {
+        let rows: Vec<(&str, &str)> = (0..40).map(|_| ("x", "1")).collect();
+        let mut app = app_with(&rows);
+        let page = &mut app.report.pages[0];
+        page.columns = 2;
+        page.bands = vec![band("db", BandType::DataBand, 0.0, 10.0, Some("d"), None, false)];
+        page.components.push(comp_in("db", "{d.n}"));
+
+        let sheets = build_sheets(&app);
+        assert_eq!(sheets.len(), 1, "40 rows fit on one sheet in two columns");
+        let page = &app.report.pages[0];
+        let split = page.margins.left + page.printable_width() / 2.0;
+        let second_column = sheets[0].items.iter().filter(|i| i.comp.rect.x > split).count();
+        assert!(second_column > 0 && second_column < 40, "some rows are in the second column");
+    }
+
+    #[test]
+    fn keep_together_moves_a_group_that_does_not_fit() {
+        // Group A: 20 rows (210 mm). Group B: 8 rows (90 mm), more than the 67 mm left on the sheet.
+        let mut rows: Vec<(&str, &str)> = (0..20).map(|_| ("A", "1")).collect();
+        rows.extend((0..8).map(|_| ("B", "2")));
+
+        let sheets_for = |keep: bool| {
+            let mut app = app_with(&rows);
+            let page = &mut app.report.pages[0];
+            page.bands = vec![
+                band("gh", BandType::GroupHeader, 0.0, 10.0, None, Some("d.g"), keep),
+                band("db", BandType::DataBand, 10.0, 10.0, Some("d"), None, false),
+            ];
+            page.components.push(comp_in("gh", "{d.g}"));
+            page.components.push(comp_in("db", "{d.n}"));
+            build_sheets(&app)
+        };
+
+        // Keep together: group B starts on the second sheet, with its header first.
+        let kept = sheets_for(true);
+        assert_eq!(kept.len(), 2);
+        let first_item = &kept[1].items[0];
+        assert_eq!(first_item.comp.parent_band_id.as_deref(), Some("gh"));
+        assert_eq!(first_item.rows["d"], 20);
+
+        // Without it, group B starts on the first sheet (its header fits with its first row).
+        let split = sheets_for(false);
+        let first_items_b = split[0].items.iter().filter(|i| i.comp.parent_band_id.as_deref() == Some("gh")).count();
+        assert_eq!(first_items_b, 2, "headers of both groups are on the first sheet");
     }
 }

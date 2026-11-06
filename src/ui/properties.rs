@@ -409,6 +409,13 @@ impl PropertiesPanel {
                         changed = true;
                     }
                 });
+                if ui
+                    .checkbox(&mut band.keep_together, "Keep whole group on one sheet")
+                    .on_hover_text("When the group fits on a sheet, move it to the next sheet instead of splitting it. The header always stays with its first row.")
+                    .changed()
+                {
+                    changed = true;
+                }
             }
             if band.band_type == BandType::DataBand || band.band_type == BandType::Header || band.band_type == BandType::Footer {
                 ui.horizontal(|ui| {

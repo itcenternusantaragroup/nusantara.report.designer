@@ -120,6 +120,9 @@ pub struct Band {
     pub data_source: Option<String>,
     /// Group bands: the column that defines the groups, as Source.Column.
     pub group_by: Option<String>,
+    /// Group header: keep the whole group on one sheet when it fits (the header always stays with its first row).
+    #[serde(default)]
+    pub keep_together: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -378,6 +381,10 @@ impl Default for Watermark {
         Self { text: "DRAFT".to_string(), font_size: 72.0, color: [150, 150, 150, 70], angle: 45.0 }
     }
 }
+fn default_column_gap() -> f32 {
+    5.0
+}
+
 /// A guide line on a page, used for placing and snapping components. Design aid only.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Guide {
@@ -399,6 +406,12 @@ pub struct Page {
     pub watermark: Option<Watermark>,
     #[serde(default)]
     pub guides: Vec<Guide>,
+    /// Number of body columns (1 = normal). Data bands flow down a column, then into the next.
+    #[serde(default)]
+    pub columns: u32,
+    /// Space between columns, in mm.
+    #[serde(default = "default_column_gap")]
+    pub column_gap: f32,
 }
 
 impl Default for Page {
@@ -414,6 +427,8 @@ impl Default for Page {
             components: Vec::new(),
             watermark: None,
             guides: Vec::new(),
+            columns: 1,
+            column_gap: 5.0,
         }
     }
 }
@@ -490,6 +505,7 @@ impl Default for Report {
             height: 22.0,
             data_source: None,
             group_by: None,
+            keep_together: false,
         };
 
         // Component in Report Title Band: Company Title and Report Header
@@ -558,6 +574,7 @@ impl Default for Report {
             height: 10.0,
             data_source: Some("Orders".to_string()),
             group_by: None,
+            keep_together: false,
         };
 
         let h_order_id = Component {
@@ -737,6 +754,7 @@ impl Default for Report {
             height: 9.0,
             data_source: Some("Orders".to_string()),
             group_by: None,
+            keep_together: false,
         };
 
         let d_order_id = Component {
@@ -916,6 +934,7 @@ impl Default for Report {
             height: 12.0,
             data_source: Some("Orders".to_string()),
             group_by: None,
+            keep_together: false,
         };
 
         let f_label = Component {
@@ -983,6 +1002,7 @@ impl Default for Report {
             height: 12.0,
             data_source: None,
             group_by: None,
+            keep_together: false,
         };
 
         let pf_info = Component {
