@@ -321,6 +321,7 @@ impl ReportDesignerApp {
                     data_source: None,
                     group_by: None,
                     keep_together: false,
+                    detail_of: None,
                 };
 
                 let comp_org = Component {
@@ -365,6 +366,7 @@ impl ReportDesignerApp {
                     data_source: Some("employee".to_string()),
                     group_by: None,
                     keep_together: false,
+                    detail_of: None,
                 };
 
                 let comp_body1 = Component {
@@ -422,6 +424,7 @@ impl ReportDesignerApp {
                     data_source: None,
                     group_by: None,
                     keep_together: false,
+                    detail_of: None,
                 };
 
                 let comp_sign1 = Component {

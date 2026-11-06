@@ -123,6 +123,9 @@ pub struct Band {
     /// Group header: keep the whole group on one sheet when it fits (the header always stays with its first row).
     #[serde(default)]
     pub keep_together: bool,
+    /// Detail band: prints once for every child row of this relation, under its parent row.
+    #[serde(default)]
+    pub detail_of: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -476,6 +479,7 @@ impl Report {
             dictionary: Dictionary {
                 data_sources: Vec::new(),
                 variables: Vec::new(),
+                relations: Vec::new(),
             },
         }
     }
@@ -506,6 +510,7 @@ impl Default for Report {
             data_source: None,
             group_by: None,
             keep_together: false,
+            detail_of: None,
         };
 
         // Component in Report Title Band: Company Title and Report Header
@@ -575,6 +580,7 @@ impl Default for Report {
             data_source: Some("Orders".to_string()),
             group_by: None,
             keep_together: false,
+            detail_of: None,
         };
 
         let h_order_id = Component {
@@ -755,6 +761,7 @@ impl Default for Report {
             data_source: Some("Orders".to_string()),
             group_by: None,
             keep_together: false,
+            detail_of: None,
         };
 
         let d_order_id = Component {
@@ -935,6 +942,7 @@ impl Default for Report {
             data_source: Some("Orders".to_string()),
             group_by: None,
             keep_together: false,
+            detail_of: None,
         };
 
         let f_label = Component {
@@ -1003,6 +1011,7 @@ impl Default for Report {
             data_source: None,
             group_by: None,
             keep_together: false,
+            detail_of: None,
         };
 
         let pf_info = Component {

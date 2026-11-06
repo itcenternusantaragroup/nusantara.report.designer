@@ -145,6 +145,42 @@ pub fn show(app: &mut ReportDesignerApp, ui: &mut egui::Ui) {
         });
     }    add_variable_row(app, ui);
 
+    // Relations: links between a parent and a child source, used by detail bands.
+    ui.add_space(10.0);
+    ui.label(theme::heading("Relations"));
+    let mut remove_relation: Option<usize> = None;
+    for (ri, rel) in app.report.dictionary.relations.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            changed |= ui.add(TextEdit::singleline(&mut rel.name).desired_width(80.0)).changed();
+            changed |= source_combo(ui, ("rel_parent", ri), &mut rel.parent, &sources);
+            changed |= column_combo(ui, ("rel_pcol", ri), &rel.parent, &mut rel.parent_column, &sources);
+            ui.label("=");
+            changed |= source_combo(ui, ("rel_child", ri), &mut rel.child, &sources);
+            changed |= column_combo(ui, ("rel_ccol", ri), &rel.child, &mut rel.child_column, &sources);
+            if ui.small_button("Remove").clicked() {
+                remove_relation = Some(ri);
+            }
+        });
+    }
+    if let Some(ri) = remove_relation {
+        app.report.dictionary.relations.remove(ri);
+        changed = true;
+    }
+    if ui.button("Add relation").clicked() {
+        if let Some((parent, pcols)) = sources.first().cloned() {
+            let (child, ccols) = sources.get(1).cloned().unwrap_or_else(|| (parent.clone(), pcols.clone()));
+            let n = app.report.dictionary.relations.len() + 1;
+            app.report.dictionary.relations.push(Relation {
+                name: format!("Relation{n}"),
+                parent,
+                parent_column: pcols.first().cloned().unwrap_or_default(),
+                child,
+                child_column: ccols.first().cloned().unwrap_or_default(),
+            });
+            changed = true;
+        }
+    }
+
     // Apply the actions collected above.
     if let Some(si) = remove_source {
         app.report.dictionary.data_sources.remove(si);
@@ -230,4 +266,30 @@ fn insert_on_page(app: &mut ReportDesignerApp, expr: String) {
     app.selected_component_id = Some(new_id);
     app.status_message = "Added field to the page.".to_string();
     app.refresh_code_buffer();
+}
+/// A combo box that picks a data source. Returns true when the choice changed.
+fn source_combo(ui: &mut egui::Ui, id: (&str, usize), value: &mut String, sources: &[(String, Vec<String>)]) -> bool {
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id).selected_text(value.as_str()).width(100.0).show_ui(ui, |ui| {
+        for (name, _) in sources {
+            if ui.selectable_value(value, name.clone(), name.as_str()).changed() {
+                changed = true;
+            }
+        }
+    });
+    changed
+}
+
+/// A combo box that picks a column of `source`. Returns true when the choice changed.
+fn column_combo(ui: &mut egui::Ui, id: (&str, usize), source: &str, value: &mut String, sources: &[(String, Vec<String>)]) -> bool {
+    let mut changed = false;
+    let columns = sources.iter().find(|(s, _)| s == source).map(|(_, c)| c.clone()).unwrap_or_default();
+    egui::ComboBox::from_id_salt(id).selected_text(value.as_str()).width(100.0).show_ui(ui, |ui| {
+        for c in &columns {
+            if ui.selectable_value(value, c.clone(), c.as_str()).changed() {
+                changed = true;
+            }
+        }
+    });
+    changed
 }

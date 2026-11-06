@@ -96,6 +96,7 @@ impl MrtHandler {
                     "Ident": band.band_type.sti_ident(),
                     "Condition": { "Value": band.group_by.as_ref().map(|g| format!("{{{g}}}")).unwrap_or_default() },
                     "KeepTogether": band.keep_together,
+                    "DetailOf": band.detail_of.clone().unwrap_or_default(),
                     "Name": band.name,
                     "ClientRectangle": format!("0,{band_top_cm:.2},{printable_w_cm:.2},{band_height_cm:.2}"),
                     "Interaction": { "Ident": "StiInteraction" },
@@ -197,6 +198,7 @@ impl MrtHandler {
             "Pages": pages_map,
             "Dictionary": {
                 "DataSources": ds_map,
+                "Relations": serde_json::to_value(&report.dictionary.relations).unwrap_or(Value::Null),
                 "Variables": vars_map,
             }
         });

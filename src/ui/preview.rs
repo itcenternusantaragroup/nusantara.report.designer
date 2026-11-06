@@ -246,6 +246,8 @@ fn paginate(app: &ReportDesignerApp, pi: usize, page: &Page) -> Vec<Sheet> {
 
     for band in bands {
         match band.band_type {
+            // Detail bands print under their parent rows (see flow_details), not here.
+            _ if band.detail_of.is_some() => {}
             BandType::PageHeader | BandType::PageFooter | BandType::GroupFooter => {}
             BandType::GroupHeader => {
                 if let (Some(plan), false) = (&group, group_printed) {
@@ -268,6 +270,7 @@ fn paginate(app: &ReportDesignerApp, pi: usize, page: &Page) -> Vec<Sheet> {
                         for i in 0..ds.rows.len() {
                             let rows = HashMap::from([(ds.name.clone(), i)]);
                             flow.flow(band, &rows);
+                            flow_details(&mut flow, page, dict, &ds.name, &rows, 0);
                         }
                     }
                     // A band with no data source prints once; an empty source prints the layout once.
@@ -280,6 +283,43 @@ fn paginate(app: &ReportDesignerApp, pi: usize, page: &Page) -> Vec<Sheet> {
     flow.finish(page_footer)
 }
 
+/// Prints the detail bands of a parent row. A detail band of a relation prints once for every
+/// child row whose column matches the parent row; its own details print under each child row.
+fn flow_details(flow: &mut Flow, page: &Page, dict: &Dictionary, parent: &str, rows: &HashMap<String, usize>, depth: usize) {
+    const MAX_DEPTH: usize = 5;
+    if depth >= MAX_DEPTH {
+        return;
+    }
+    let (Some(parent_ds), Some(&parent_row)) = (dict.data_sources.iter().find(|d| d.name == parent), rows.get(parent))
+    else {
+        return;
+    };
+    let mut details: Vec<&Band> = page.bands.iter().filter(|b| b.detail_of.is_some()).collect();
+    details.sort_by(|a, b| a.top.partial_cmp(&b.top).unwrap_or(Ordering::Equal));
+    for band in details {
+        let Some(rel) = band.detail_of.as_deref().and_then(|name| {
+            dict.relations.iter().find(|r| r.name == name && r.parent == parent)
+        }) else {
+            continue;
+        };
+        let Some(child) = dict.data_sources.iter().find(|d| d.name == rel.child) else { continue };
+        let key = parent_ds
+            .rows
+            .get(parent_row)
+            .and_then(|r| r.get(&rel.parent_column))
+            .map(|v| v.trim().to_string())
+            .unwrap_or_default();
+        for (j, row) in child.rows.iter().enumerate() {
+            if row.get(&rel.child_column).map(|v| v.trim()) != Some(key.as_str()) {
+                continue;
+            }
+            let mut child_rows = rows.clone();
+            child_rows.insert(child.name.clone(), j);
+            flow.flow(band, &child_rows);
+            flow_details(flow, page, dict, &child.name, &child_rows, depth + 1);
+        }
+    }
+}
 /// The grouping of a page: the group header and footer, the data bands that repeat per group,
 /// and the sorted row order of the grouped source.
 struct GroupPlan<'a> {
@@ -881,6 +921,7 @@ mod tests {
             data_source: None,
             group_by: Some("detail.tgl".into()),
             keep_together: false,
+            detail_of: None,
         });
         page.bands.push(Band {
             id: "db".into(),
@@ -891,6 +932,7 @@ mod tests {
             data_source: Some("detail".into()),
             group_by: None,
             keep_together: false,
+            detail_of: None,
         });
         let mut data_cell = Component::default();
         data_cell.parent_band_id = Some("db".into());
@@ -991,6 +1033,7 @@ mod pagination_tests {
             data_source: source.map(|s| s.into()),
             group_by: group.map(|s| s.into()),
             keep_together: keep,
+            detail_of: None,
         }
     }
 
@@ -1068,5 +1111,142 @@ mod pagination_tests {
         let split = sheets_for(false);
         let first_items_b = split[0].items.iter().filter(|i| i.comp.parent_band_id.as_deref() == Some("gh")).count();
         assert_eq!(first_items_b, 2, "headers of both groups are on the first sheet");
+    }
+}
+#[cfg(test)]
+mod master_detail_tests {
+    use super::*;
+    use crate::model::{Band, BandType, DataSource, Relation, Report};
+
+    fn row(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    fn source(name: &str, rows: Vec<HashMap<String, String>>) -> DataSource {
+        DataSource { name: name.into(), alias: name.into(), columns: Vec::new(), rows }
+    }
+
+    fn band(id: &str, top: f32, detail_of: Option<&str>, data_source: &str) -> Band {
+        Band {
+            id: id.into(),
+            name: id.into(),
+            band_type: BandType::DataBand,
+            top,
+            height: 10.0,
+            data_source: Some(data_source.into()),
+            group_by: None,
+            keep_together: false,
+            detail_of: detail_of.map(|s| s.into()),
+        }
+    }
+
+    fn line(band_id: &str, text: &str) -> Component {
+        let mut c = Component::default();
+        c.parent_band_id = Some(band_id.into());
+        c.text = text.into();
+        c
+    }
+
+    #[test]
+    fn details_follow_their_parent_and_nest() {
+        let mut app = ReportDesignerApp::new(None, None);
+        app.report = Report::blank();
+        app.report.dictionary.data_sources = vec![
+            source("orders", vec![row(&[("id", "1")]), row(&[("id", "2")]), row(&[("id", "3")])]),
+            source(
+                "details",
+                vec![
+                    row(&[("id", "d1"), ("order_id", "1"), ("item", "a")]),
+                    row(&[("id", "d2"), ("order_id", "1"), ("item", "b")]),
+                    row(&[("id", "d3"), ("order_id", "2"), ("item", "c")]),
+                ],
+            ),
+            source(
+                "parts",
+                vec![
+                    row(&[("detail_id", "d1"), ("part", "p1")]),
+                    row(&[("detail_id", "d1"), ("part", "p2")]),
+                    row(&[("detail_id", "d3"), ("part", "p3")]),
+                ],
+            ),
+        ];
+        app.report.dictionary.relations = vec![
+            Relation { name: "items".into(), parent: "orders".into(), parent_column: "id".into(), child: "details".into(), child_column: "order_id".into() },
+            Relation { name: "parts".into(), parent: "details".into(), parent_column: "id".into(), child: "parts".into(), child_column: "detail_id".into() },
+        ];
+        let page = &mut app.report.pages[0];
+        page.bands = vec![
+            band("mh", 0.0, None, "orders"),
+            band("dt", 10.0, Some("items"), "details"),
+            band("sb", 20.0, Some("parts"), "parts"),
+        ];
+        page.components.push(line("mh", "{orders.id}"));
+        page.components.push(line("dt", "{details.item}"));
+        page.components.push(line("sb", "{parts.part}"));
+
+        let sheets = build_sheets(&app);
+        let items: Vec<&Item> = sheets.iter().flat_map(|s| s.items.iter()).collect();
+        let seq: Vec<(String, Option<usize>, Option<usize>, Option<usize>)> = items
+            .iter()
+            .map(|i| {
+                (
+                    i.comp.parent_band_id.clone().unwrap_or_default(),
+                    i.rows.get("orders").copied(),
+                    i.rows.get("details").copied(),
+                    i.rows.get("parts").copied(),
+                )
+            })
+            .collect();
+        let want = vec![
+            ("mh", Some(0), None, None),
+            ("dt", Some(0), Some(0), None),
+            ("sb", Some(0), Some(0), Some(0)),
+            ("sb", Some(0), Some(0), Some(1)),
+            ("dt", Some(0), Some(1), None),
+            ("mh", Some(1), None, None),
+            ("dt", Some(1), Some(2), None),
+            ("sb", Some(1), Some(2), Some(2)),
+            ("mh", Some(2), None, None),
+        ];
+        let want: Vec<(String, Option<usize>, Option<usize>, Option<usize>)> =
+            want.into_iter().map(|(b, o, d, p)| (b.to_string(), o, d, p)).collect();
+        assert_eq!(seq, want);
+    }
+}
+#[cfg(test)]
+mod relation_file_tests {
+    use crate::model::{Band, BandType, DataSource, MrtHandler, Relation, Report};
+
+    #[test]
+    fn relations_and_detail_bands_survive_save_and_load() {
+        let mut report = Report::blank();
+        report.dictionary.data_sources = vec![
+            DataSource { name: "orders".into(), alias: "orders".into(), columns: Vec::new(), rows: Vec::new() },
+            DataSource { name: "details".into(), alias: "details".into(), columns: Vec::new(), rows: Vec::new() },
+        ];
+        report.dictionary.relations = vec![Relation {
+            name: "items".into(),
+            parent: "orders".into(),
+            parent_column: "id".into(),
+            child: "details".into(),
+            child_column: "order_id".into(),
+        }];
+        report.pages[0].bands = vec![Band {
+            id: "dt".into(),
+            name: "dt".into(),
+            band_type: BandType::DataBand,
+            top: 10.0,
+            height: 8.0,
+            data_source: Some("details".into()),
+            group_by: None,
+            keep_together: false,
+            detail_of: Some("items".into()),
+        }];
+
+        let json = MrtHandler::to_stimulsoft_json(&report).expect("serialise");
+        let text = serde_json::to_string(&json).expect("text");
+        let loaded = MrtHandler::from_mrt_content(&text).expect("load");
+        assert_eq!(loaded.dictionary.relations, report.dictionary.relations);
+        assert_eq!(loaded.pages[0].bands[0].detail_of.as_deref(), Some("items"));
     }
 }

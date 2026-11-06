@@ -363,6 +363,7 @@ impl PropertiesPanel {
         let mut changed = false;
 
         let ds_names: Vec<String> = app.report.dictionary.data_sources.iter().map(|d| d.name.clone()).collect();
+        let rel_names: Vec<String> = app.report.dictionary.relations.iter().map(|r| r.name.clone()).collect();
 
         {
             let band = match app.current_page_mut().bands.iter_mut().find(|b| b.id == band_id) {
@@ -439,6 +440,26 @@ impl PropertiesPanel {
             }
 
             ui.add_space(8.0);
+            if band.band_type == BandType::DataBand && !rel_names.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label("Detail of:");
+                    let current = band.detail_of.clone().unwrap_or_else(|| "None".to_string());
+                    egui::ComboBox::from_id_salt("band_detail_combo").selected_text(&current).show_ui(ui, |ui| {
+                        if ui.selectable_label(band.detail_of.is_none(), "None").clicked() {
+                            band.detail_of = None;
+                            changed = true;
+                        }
+                        for name in &rel_names {
+                            if ui.selectable_label(band.detail_of.as_deref() == Some(name), name).clicked() {
+                                band.detail_of = Some(name.clone());
+                                changed = true;
+                            }
+                        }
+                    });
+                })
+                .response
+                .on_hover_text("Print this band once for every child row of the relation, under its parent row.");
+            }
             if ui.button("Delete band").clicked() {
                 app.delete_selected();
                 return;

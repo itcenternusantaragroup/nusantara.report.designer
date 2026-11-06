@@ -514,6 +514,7 @@ mod tests {
                 rows: vec![row],
             }],
             variables: Vec::new(),
+            relations: Vec::new(),
         }
     }
 

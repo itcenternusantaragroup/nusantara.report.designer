@@ -348,6 +348,9 @@ fn read_dictionary_json(dict: &Value, report: &mut Report, base_dir: Option<&Pat
         }
     }
 
+    if let Some(rels) = dict.get("Relations").and_then(|x| serde_json::from_value(x.clone()).ok()) {
+        report.dictionary.relations = rels;
+    }
     if let Some(vars) = dict.get("Variables").and_then(|x| x.as_object()) {
         for var in vars.values() {
             let name = str_of(var, "Name");
@@ -521,7 +524,8 @@ fn collect_components(page: &mut Page, comps: &Value, origin: (f32, f32), parent
                 height: rect.h,
                 data_source: if ds.is_empty() { None } else { Some(ds.to_string()) },
                 group_by: group_condition(cv),
-                keep_together: false,
+                keep_together: flag_of(cv, "KeepTogether"),
+                detail_of: Some(str_of(cv, "DetailOf").to_string()).filter(|s| !s.is_empty()),
             });
             // Band children are positioned from the band's top-left, inside the page margins.
             let band_origin = (page.margins.left + rect.x, rect.y);

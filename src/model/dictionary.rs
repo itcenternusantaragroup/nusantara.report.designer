@@ -87,6 +87,20 @@ impl RunningTotals {
 pub struct Dictionary {
     pub data_sources: Vec<DataSource>,
     pub variables: Vec<Variable>,
+    /// Master-detail links between data sources.
+    #[serde(default)]
+    pub relations: Vec<Relation>,
+}
+
+/// A link between a parent (master) source and a child (detail) source: a child row belongs to a
+/// parent row when their columns hold the same value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Relation {
+    pub name: String,
+    pub parent: String,
+    pub parent_column: String,
+    pub child: String,
+    pub child_column: String,
 }
 
 impl Default for Dictionary {
@@ -147,6 +161,7 @@ impl Default for Dictionary {
         Self {
             data_sources: vec![orders_source],
             variables: company_vars,
+            relations: Vec::new(),
         }
     }
 }
@@ -304,6 +319,7 @@ mod running_tests {
                 Variable { name: "Count".into(), alias: "Count".into(), value: String::new(), var_type: String::new(),
                     running: Some(Running { source: "d".into(), column: "amt".into(), kind: RunningKind::Count }) },
             ],
+            relations: Vec::new(),
         };
         let totals = RunningTotals::new(&dict);
 
