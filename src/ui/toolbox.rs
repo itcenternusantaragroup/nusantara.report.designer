@@ -52,7 +52,7 @@ impl ToolboxPanel {
 
                 egui::ScrollArea::vertical().show(ui, |ui| match current_tab {
                     ToolboxTab::Pages => Self::show_pages(app, ui),
-                    ToolboxTab::Data => Self::show_data(app, ui),
+                    ToolboxTab::Data => super::dictionary_panel::show(app, ui),
                     ToolboxTab::Outline => Self::show_outline(app, ui),
                 });
             });
@@ -78,83 +78,6 @@ impl ToolboxPanel {
                 app.selected_component_id = None;
                 app.selected_band_id = None;
             }
-        }
-    }
-
-    fn show_data(app: &mut ReportDesignerApp, ui: &mut egui::Ui) {
-        if ui.button("Load JSON data...").on_hover_text("Load a JSON file as a data source").clicked() {
-            app.load_json_datasource_dialog();
-        }
-
-        ui.add_space(12.0);
-        ui.label(theme::heading("Data sources"));
-
-        let mut insert_field = None;
-
-        if app.report.dictionary.data_sources.is_empty() {
-            ui.label(theme::caption("No data sources yet. Load a JSON file to add fields."));
-        }
-
-        for ds in &app.report.dictionary.data_sources {
-            egui::CollapsingHeader::new(format!("{} ({} rows)", ds.name, ds.rows.len()))
-                .default_open(true)
-                .show(ui, |ui| {
-                    for col in &ds.columns {
-                        ui.horizontal(|ui| {
-                            ui.label(&col.name);
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.small_button("Add").on_hover_text("Place this field on the page").clicked() {
-                                    insert_field = Some(format!("{{{}.{}}}", ds.name, col.name));
-                                }
-                            });
-                        });
-                    }
-                });
-        }
-
-        if let Some(expr) = insert_field {
-            app.push_undo();
-            let mut comp = Component::default();
-            comp.name = format!("Field_{}", app.current_page().components.len() + 1);
-            comp.text = expr;
-            comp.rect = RectMm::new(20.0, 50.0, 45.0, 8.0);
-            comp.border_sides = BorderSides::all();
-            let new_id = comp.id.clone();
-            app.current_page_mut().components.push(comp);
-            app.selected_component_id = Some(new_id);
-            app.status_message = "Added data field to the page.".to_string();
-            app.refresh_code_buffer();
-        }
-
-        ui.add_space(12.0);
-        ui.label(theme::heading("Variables"));
-
-        let mut insert_var = None;
-        if app.report.dictionary.variables.is_empty() {
-            ui.label(theme::caption("No variables defined."));
-        }
-        for var in &app.report.dictionary.variables {
-            ui.horizontal(|ui| {
-                ui.label(&var.name);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("Add").clicked() {
-                        insert_var = Some(var.name.clone());
-                    }
-                });
-            });
-        }
-
-        if let Some(var_name) = insert_var {
-            app.push_undo();
-            let mut comp = Component::default();
-            comp.name = format!("Var_{}", app.current_page().components.len() + 1);
-            comp.text = format!("{{{var_name}}}");
-            comp.rect = RectMm::new(20.0, 50.0, 50.0, 8.0);
-            let new_id = comp.id.clone();
-            app.current_page_mut().components.push(comp);
-            app.selected_component_id = Some(new_id);
-            app.status_message = "Added variable to the page.".to_string();
-            app.refresh_code_buffer();
         }
     }
 

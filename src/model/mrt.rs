@@ -94,6 +94,7 @@ impl MrtHandler {
 
                 let band_json = json!({
                     "Ident": band.band_type.sti_ident(),
+                    "Condition": { "Value": band.group_by.as_ref().map(|g| format!("{{{g}}}")).unwrap_or_default() },
                     "Name": band.name,
                     "ClientRectangle": format!("0,{band_top_cm:.2},{printable_w_cm:.2},{band_height_cm:.2}"),
                     "Interaction": { "Ident": "StiInteraction" },
@@ -256,6 +257,10 @@ impl MrtHandler {
             "BarCodeType": comp.barcode_format,
             "Checked": comp.checked,
             "AllowHtmlTags": comp.allow_html_tags,
+            "ImageBytes": comp.image_data.as_ref().map(|b| {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD.encode(b)
+            }).unwrap_or_default(),
         })
     }
 
@@ -496,6 +501,31 @@ mod tests {
 
         assert_eq!(loaded_report.name, original_report.name);
         assert_eq!(loaded_report.pages.len(), original_report.pages.len());
+    }
+
+    #[test]
+    fn picture_survives_save_and_load() {
+        let mut png = Vec::new();
+        image::RgbaImage::new(2, 2)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .expect("encode png");
+
+        let mut report = Report::blank();
+        let mut pic = Component::default();
+        pic.comp_type = ComponentType::Image;
+        pic.parent_band_id = None;
+        pic.image_data = Some(png.clone());
+        report.pages[0].components.push(pic);
+
+        let json = MrtHandler::to_stimulsoft_json(&report).expect("to json");
+        let text = serde_json::to_string(&json).expect("text");
+        let loaded = MrtHandler::from_stimulsoft_json_str(&text, None).expect("load");
+        let found = loaded.pages[0]
+            .components
+            .iter()
+            .find(|c| c.comp_type == ComponentType::Image)
+            .expect("image component");
+        assert_eq!(found.image_data.as_deref(), Some(png.as_slice()));
     }
 
     #[test]

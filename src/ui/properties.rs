@@ -347,6 +347,21 @@ impl PropertiesPanel {
                 }
             });
 
+                        if band.band_type == BandType::GroupHeader {
+                ui.horizontal(|ui| {
+                    ui.label("Group by:");
+                    let mut group = band.group_by.clone().unwrap_or_default();
+                    if ui
+                        .add(egui::TextEdit::singleline(&mut group).hint_text("Source.Column").desired_width(150.0))
+                        .on_hover_text("Rows with the same value form one group, e.g. detail.tgl_kantin")
+                        .changed()
+                    {
+                        let group = group.trim().to_string();
+                        band.group_by = if group.is_empty() { None } else { Some(group) };
+                        changed = true;
+                    }
+                });
+            }
             if band.band_type == BandType::DataBand || band.band_type == BandType::Header || band.band_type == BandType::Footer {
                 ui.horizontal(|ui| {
                     ui.label("Data Source:");

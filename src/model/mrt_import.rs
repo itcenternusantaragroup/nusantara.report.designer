@@ -507,6 +507,7 @@ fn collect_components(page: &mut Page, comps: &Value, origin: (f32, f32), parent
                 top: rect.y,
                 height: rect.h,
                 data_source: if ds.is_empty() { None } else { Some(ds.to_string()) },
+                group_by: group_condition(cv),
             });
             // Band children are positioned from the band's top-left, inside the page margins.
             let band_origin = (page.margins.left + rect.x, rect.y);
@@ -609,7 +610,23 @@ fn parse_component(cv: &Value, unit: f32) -> Option<Component> {
         comp.checked = checked;
     }
     comp.allow_html_tags = flag_of(cv, "AllowHtmlTags");
+    // Picture data is stored as base64 (JSON string, or the same text in XML).
+    if let Some(b64) = cv.get("ImageBytes").and_then(|x| x.as_str()).map(str::trim).filter(|s| !s.is_empty()) {
+        use base64::Engine;
+        comp.image_data = base64::engine::general_purpose::STANDARD.decode(b64).ok();
+    }
     Some(comp)
+}
+
+/// The group condition of a group band, as Source.Column (braces removed).
+fn group_condition(cv: &Value) -> Option<String> {
+    let raw = match cv.get("Condition") {
+        Some(Value::String(s)) => s.clone(),
+        Some(obj) => str_of(obj, "Value").to_string(),
+        None => String::new(),
+    };
+    let text = raw.trim().trim_start_matches('{').trim_end_matches('}').trim().to_string();
+    (!text.is_empty()).then_some(text)
 }
 
 fn ident_to_band_type(ident: &str) -> Option<BandType> {

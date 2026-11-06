@@ -1,6 +1,7 @@
 use eframe::egui::{self, Color32, Frame, Margin, Sense};
 
 use crate::model::*;
+use super::arrange::Align;
 use super::designer::{ActiveTool, AppMode, ReportDesignerApp};
 use super::icons::{self, Icon};
 use super::theme::{self, PAPER, TOOLBAR};
@@ -183,6 +184,45 @@ impl RibbonBar {
                         }
                     });
 
+                    icons::menu(ui, "Arrange", |ui| {
+                        let n = app.selected_ids().len();
+                        let two = n >= 2;
+                        let three = n >= 3;
+                        ui.label(theme::caption("Align (2+ selected)"));
+                        for (al, lbl) in [
+                            (Align::Left, "Align left"),
+                            (Align::HCenter, "Align horizontal centers"),
+                            (Align::Right, "Align right"),
+                            (Align::Top, "Align top"),
+                            (Align::VCenter, "Align vertical centers"),
+                            (Align::Bottom, "Align bottom"),
+                        ] {
+                            if ui.add_enabled(two, egui::Button::new(lbl)).clicked() {
+                                app.align_selected(al);
+                                ui.close_menu();
+                            }
+                        }
+                        ui.separator();
+                        ui.label(theme::caption("Distribute (3+ selected)"));
+                        if ui.add_enabled(three, egui::Button::new("Distribute horizontally")).clicked() {
+                            app.distribute_selected(true);
+                            ui.close_menu();
+                        }
+                        if ui.add_enabled(three, egui::Button::new("Distribute vertically")).clicked() {
+                            app.distribute_selected(false);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add_enabled(n >= 1, egui::Button::new("Bring to front")).clicked() {
+                            app.z_order(true);
+                            ui.close_menu();
+                        }
+                        if ui.add_enabled(n >= 1, egui::Button::new("Send to back")).clicked() {
+                            app.z_order(false);
+                            ui.close_menu();
+                        }
+                    });
+
                     icons::menu(ui, "Page", |ui| {
                         let page = app.current_page_mut();
                         ui.label(theme::caption("Orientation"));
@@ -241,6 +281,8 @@ impl RibbonBar {
             (BandType::DataBand, "Data"),
             (BandType::Footer, "Footer"),
             (BandType::PageFooter, "Page footer"),
+            (BandType::GroupHeader, "Group header"),
+            (BandType::GroupFooter, "Group footer"),
         ] {
             let tool = ActiveTool::InsertBand(bt);
             if ui.selectable_label(app.active_tool == tool, lbl).clicked() {

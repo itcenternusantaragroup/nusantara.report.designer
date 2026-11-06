@@ -52,6 +52,12 @@ pub enum DragState {
         comp_id: String,
         initial_rect: RectMm,
         mouse_start_mm: (f32, f32),
+        /// Other selected components that move with it: (id, rect at the start of the drag).
+        others: Vec<(String, RectMm)>,
+    },
+    /// Rubber-band selection: start is the press point in screen pixels.
+    Marquee {
+        start: (f32, f32),
     },
     Resizing {
         comp_id: String,
@@ -108,12 +114,16 @@ pub struct ReportDesignerApp {
     pub splash_started: Option<std::time::Instant>,
     /// Show the splash even in screenshot mode (for testing).
     pub splash_forced: bool,
+    /// Selected components besides selected_component_id (see arrange.rs).
+    pub extra_selected: Vec<String>,
     /// Short pop-up message (text, time shown), for example after a save.
     pub toast: Option<(String, std::time::Instant)>,
     /// Window title last sent to the window, so it is only updated when it changes.
     pub last_title: String,
     /// Scroll the preview to this sheet (testing: --preview-sheet N).
     pub preview_sheet: Option<usize>,
+    /// Decoded pictures for image components.
+    pub images: super::images::ImageCache,
 }
 
 impl ReportDesignerApp {
@@ -168,7 +178,9 @@ impl ReportDesignerApp {
             brand_checked: false,
             splash_started: None,
             splash_forced: false,
+            extra_selected: Vec::new(),
             preview_sheet: None,
+            images: Default::default(),
             toast: None,
             last_title: String::new(),
         }
@@ -289,6 +301,7 @@ impl ReportDesignerApp {
                     top: 10.0,
                     height: 30.0,
                     data_source: None,
+                    group_by: None,
                 };
 
                 let comp_org = Component {
@@ -331,6 +344,7 @@ impl ReportDesignerApp {
                     top: 45.0,
                     height: 50.0,
                     data_source: Some("employee".to_string()),
+                    group_by: None,
                 };
 
                 let comp_body1 = Component {
@@ -386,6 +400,7 @@ impl ReportDesignerApp {
                     top: 105.0,
                     height: 35.0,
                     data_source: None,
+                    group_by: None,
                 };
 
                 let comp_sign1 = Component {
@@ -455,9 +470,11 @@ impl ReportDesignerApp {
     }
 
     pub fn delete_selected(&mut self) {
-        if let Some(sel_id) = self.selected_component_id.take() {
+        let selected = self.selected_ids();
+        if !selected.is_empty() {
             self.push_undo();
-            self.current_page_mut().components.retain(|c| c.id != sel_id);
+            self.current_page_mut().components.retain(|c| !selected.contains(&c.id));
+            self.clear_component_selection();
             self.status_message = "Component deleted.".to_string();
             self.refresh_code_buffer();
         } else if let Some(band_id) = self.selected_band_id.take() {
@@ -599,7 +616,7 @@ impl ReportDesignerApp {
                 Ok(sources) => {
                     self.push_undo();
                     let count = sources.len();
-                    self.report.dictionary.data_sources.extend(sources);
+                    for ds in sources { self.report.dictionary.data_sources.retain(|d| d.name != ds.name); self.report.dictionary.data_sources.push(ds); }
                     self.status_message = format!("Loaded {count} data sources from {}", path.file_name().unwrap_or_default().to_string_lossy());
                 }
                 Err(e) => {
@@ -636,9 +653,10 @@ impl ReportDesignerApp {
             return;
         }
 
-        if self.selected_component_id.is_some() {
+        let ids = self.selected_ids();
+        if !ids.is_empty() {
             self.push_undo();
-            if let Some(c) = self.selected_component_mut() {
+            for c in self.current_page_mut().components.iter_mut().filter(|c| ids.contains(&c.id)) {
                 c.rect.x = (c.rect.x + dx).max(0.0);
                 c.rect.y = (c.rect.y + dy).max(0.0);
             }

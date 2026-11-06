@@ -19,20 +19,31 @@ pub struct PreviewView;
 
 /// A component placed on one printed sheet. `comp.rect` is its position on that sheet (mm).
 #[derive(Clone)]
-struct Item {
-    comp: Component,
+pub(super) struct Item {
+    pub(super) comp: Component,
     /// Row index per data source for the band this item came from.
-    rows: HashMap<String, usize>,
+    pub(super) rows: HashMap<String, usize>,
 }
 
 /// One printed page of the report.
-struct Sheet {
-    page_idx: usize,
-    items: Vec<Item>,
+pub(super) struct Sheet {
+    pub(super) page_idx: usize,
+    pub(super) items: Vec<Item>,
 }
 
 impl PreviewView {
     pub fn show(app: &mut ReportDesignerApp, ctx: &egui::Context) {
+        let missing: Vec<Vec<u8>> = app
+            .report
+            .pages
+            .iter()
+            .flat_map(|p| p.components.iter())
+            .filter_map(|c| c.image_data.as_ref())
+            .filter(|b| !app.images.contains_key(&super::images::key(b)))
+            .cloned()
+            .collect();
+        super::images::ensure_loaded(ctx, &mut app.images, &missing);
+
         egui::TopBottomPanel::top("preview_toolbar")
             .frame(Frame::none().fill(PAPER).inner_margin(Margin::symmetric(12.0, 6.0)))
             .show(ctx, |ui| {
@@ -43,6 +54,9 @@ impl PreviewView {
                     ui.separator();
                     if icons::chip(ui, None, "Export HTML...", true, false).clicked() {
                         Self::export_html_dialog(app);
+                    }
+                    if icons::chip(ui, None, "Export PDF...", true, false).clicked() {
+                        Self::export_pdf_dialog(app);
                     }
                     if icons::chip(ui, None, "Export text...", true, false).clicked() {
                         Self::export_text_dialog(app);
@@ -110,7 +124,7 @@ impl PreviewView {
                 if matches!(comp.comp_type, ComponentType::Text | ComponentType::Barcode | ComponentType::CheckBox) {
                     comp.text = eval.evaluate(&comp.text);
                 }
-                draw_component(&painter, &comp, rect, mm_px, app.zoom);
+                draw_component(&painter, &comp, rect, mm_px, app.zoom, &app.images);
             }
 
             y += h_px + SHEET_GAP;
@@ -125,6 +139,21 @@ impl PreviewView {
         {
             match std::fs::write(&path, sheets_to_html(app)) {
                 Ok(()) => app.status_message = format!("Exported HTML report to {}", path.display()),
+                Err(e) => app.status_message = format!("Export failed: {e}"),
+            }
+        }
+    }
+
+    fn export_pdf_dialog(app: &mut ReportDesignerApp) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("PDF document (*.pdf)", &["pdf"])
+            .set_file_name("report.pdf")
+            .save_file()
+        {
+            let result = super::pdf_export::sheets_to_pdf(app)
+                .and_then(|bytes| std::fs::write(&path, bytes).map_err(|e| e.to_string()));
+            match result {
+                Ok(()) => app.status_message = format!("Exported PDF report to {}", path.display()),
                 Err(e) => app.status_message = format!("Export failed: {e}"),
             }
         }
@@ -150,7 +179,7 @@ impl PreviewView {
 // and starting a new sheet when a band would run into the page footer.
 // ---------------------------------------------------------------------------
 
-fn build_sheets(app: &ReportDesignerApp) -> Vec<Sheet> {
+pub(super) fn build_sheets(app: &ReportDesignerApp) -> Vec<Sheet> {
     let mut sheets = Vec::new();
     for (pi, page) in app.report.pages.iter().enumerate() {
         sheets.extend(paginate(app, pi, page));
@@ -189,9 +218,22 @@ fn paginate(app: &ReportDesignerApp, pi: usize, page: &Page) -> Vec<Sheet> {
     bands.sort_by(|a, b| a.top.partial_cmp(&b.top).unwrap_or(Ordering::Equal));
     let none = HashMap::new();
 
+    // A group (GroupHeader with a valid condition) prints its data bands once per group.
+    let group = group_plan(page, dict);
+    let mut group_printed = false;
+
     for band in bands {
         match band.band_type {
-            BandType::PageHeader | BandType::PageFooter => {}
+            BandType::PageHeader | BandType::PageFooter | BandType::GroupFooter => {}
+            BandType::GroupHeader => {
+                if let (Some(plan), false) = (&group, group_printed) {
+                    group_printed = true;
+                    flow_groups(&mut flow, page, plan);
+                }
+            }
+            BandType::DataBand if group.as_ref().map_or(false, |g| band.data_source.as_deref() == g.source_name()) => {
+                // Printed inside the groups.
+            }
             BandType::DataBand => {
                 // Use the band's own data source; if it has none, use the source its fields refer to.
                 let source = band
@@ -213,10 +255,75 @@ fn paginate(app: &ReportDesignerApp, pi: usize, page: &Page) -> Vec<Sheet> {
             _ => flow.flow(band, &none),
         }
     }
-
     flow.finish(page_footer)
 }
 
+/// The grouping of a page: the group header and footer, the data bands that repeat per group,
+/// and the sorted row order of the grouped source.
+struct GroupPlan<'a> {
+    header: &'a Band,
+    footer: Option<&'a Band>,
+    data_bands: Vec<&'a Band>,
+    source: &'a DataSource,
+    column: String,
+}
+
+impl GroupPlan<'_> {
+    fn source_name(&self) -> Option<&str> {
+        Some(self.source.name.as_str())
+    }
+}
+
+/// Builds the group plan when the page has a group header whose condition names a loaded column.
+fn group_plan<'a>(page: &'a Page, dict: &'a Dictionary) -> Option<GroupPlan<'a>> {
+    let header = page.bands.iter().find(|b| b.band_type == BandType::GroupHeader)?;
+    let condition = header.group_by.as_deref()?;
+    let (source_name, column) = condition.split_once('.')?;
+    let source = dict.data_sources.iter().find(|d| d.name == source_name)?;
+    if source.rows.is_empty() {
+        return None;
+    }
+    let footer = page.bands.iter().find(|b| b.band_type == BandType::GroupFooter);
+    let mut data_bands: Vec<&Band> = page
+        .bands
+        .iter()
+        .filter(|b| b.band_type == BandType::DataBand && b.data_source.as_deref() == Some(source_name))
+        .collect();
+    data_bands.sort_by(|a, b| a.top.partial_cmp(&b.top).unwrap_or(Ordering::Equal));
+    Some(GroupPlan { header, footer, data_bands, source, column: column.to_string() })
+}
+
+/// Prints every group: the header, the data bands for each row of the group, then the footer.
+/// Rows are sorted by the grouping column, so equal values are next to each other.
+fn flow_groups(flow: &mut Flow, page: &Page, plan: &GroupPlan) {
+    let _ = page;
+    let mut order: Vec<usize> = (0..plan.source.rows.len()).collect();
+    let value = |i: usize| plan.source.rows[i].get(&plan.column).map(|s| s.trim().to_string()).unwrap_or_default();
+    order.sort_by(|&a, &b| value(a).cmp(&value(b)));
+
+    let mut start = 0;
+    while start < order.len() {
+        let key = value(order[start]);
+        let mut end = start;
+        while end + 1 < order.len() && value(order[end + 1]) == key {
+            end += 1;
+        }
+        let first = order[start];
+        let last = order[end];
+        let name = plan.source.name.clone();
+
+        flow.flow(plan.header, &HashMap::from([(name.clone(), first)]));
+        for &row in &order[start..=end] {
+            for band in &plan.data_bands {
+                flow.flow(band, &HashMap::from([(name.clone(), row)]));
+            }
+        }
+        if let Some(footer) = plan.footer {
+            flow.flow(footer, &HashMap::from([(name.clone(), last)]));
+        }
+        start = end + 1;
+    }
+}
 struct Flow<'a> {
     page: &'a Page,
     pi: usize,
@@ -307,7 +414,7 @@ fn sheet_offset(app: &ReportDesignerApp, n: usize) -> f32 {
     y
 }
 
-fn page_size(app: &ReportDesignerApp, sheet: &Sheet) -> (f32, f32) {
+pub(super) fn page_size(app: &ReportDesignerApp, sheet: &Sheet) -> (f32, f32) {
     app.report.pages[sheet.page_idx].effective_dimensions()
 }
 
@@ -321,7 +428,14 @@ fn draw_paper(painter: &egui::Painter, rect: Rect) {
     painter.rect_stroke(rect, 0.0, Stroke::new(1.0_f32, RULE));
 }
 
-fn draw_component(painter: &egui::Painter, comp: &Component, page_rect: Rect, mm_px: f32, zoom: f32) {
+fn draw_component(
+    painter: &egui::Painter,
+    comp: &Component,
+    page_rect: Rect,
+    mm_px: f32,
+    zoom: f32,
+    images: &super::images::ImageCache,
+) {
     let c_rect = Rect::from_min_size(
         Pos2::new(page_rect.min.x + comp.rect.x * mm_px, page_rect.min.y + comp.rect.y * mm_px),
         Vec2::new(comp.rect.w * mm_px, comp.rect.h * mm_px),
@@ -412,8 +526,13 @@ fn draw_component(painter: &egui::Painter, comp: &Component, page_rect: Rect, mm
             let text_rect = Rect::from_min_max(Pos2::new(box_rect.right() + 3.0, c_rect.top()), c_rect.max);
             rt::draw(painter, &comp_as_text(comp), &comp.text, text_rect, rt::px_per_pt(zoom));
         }
-        // Images and tables cannot be rendered yet; they keep their place on the page.
-        ComponentType::Image | ComponentType::Table => {}
+        ComponentType::Image => {
+            if let Some(texture) = comp.image_data.as_ref().and_then(|b| images.get(&super::images::key(b))) {
+                super::images::paint(painter, texture, c_rect);
+            }
+        }
+        // Tables are not rendered yet; they keep their place on the page.
+        ComponentType::Table => {}
     }
 }
 
@@ -430,7 +549,7 @@ fn comp_as_text(comp: &Component) -> Component {
 // Values shown in the preview
 // ---------------------------------------------------------------------------
 
-fn base_vars(app: &ReportDesignerApp) -> HashMap<String, String> {
+pub(super) fn base_vars(app: &ReportDesignerApp) -> HashMap<String, String> {
     let mut vars = HashMap::new();
     for v in &app.report.dictionary.variables {
         vars.insert(v.name.clone(), v.value.clone());
@@ -609,7 +728,69 @@ mod tests {
 
     /// Prints every printed sheet of the report named by `NUSA_PREVIEW_FILE`, and every
     /// expression that is still not evaluated. Skipped when the variable is not set.
-    #[test]
+        #[test]
+    fn groups_repeat_header_and_data_per_group() {
+        let mut app = ReportDesignerApp::new(None, None);
+        let page = &mut app.report.pages[0];
+        page.bands.clear();
+        page.components.clear();
+        page.bands.push(Band {
+            id: "gh".into(),
+            name: "GroupHeader1".into(),
+            band_type: BandType::GroupHeader,
+            top: 10.0,
+            height: 5.0,
+            data_source: None,
+            group_by: Some("detail.tgl".into()),
+        });
+        page.bands.push(Band {
+            id: "db".into(),
+            name: "DataBand1".into(),
+            band_type: BandType::DataBand,
+            top: 20.0,
+            height: 5.0,
+            data_source: Some("detail".into()),
+            group_by: None,
+        });
+        let mut data_cell = Component::default();
+        data_cell.parent_band_id = Some("db".into());
+        data_cell.text = "{detail.nama}".into();
+        data_cell.rect = RectMm::new(0.0, 20.0, 50.0, 5.0);
+        page.components.push(data_cell);
+        let mut header_cell = Component::default();
+        header_cell.parent_band_id = Some("gh".into());
+        header_cell.text = "{detail.tgl}".into();
+        header_cell.rect = RectMm::new(0.0, 10.0, 50.0, 5.0);
+        page.components.push(header_cell);
+
+        let row = |tgl: &str, nama: &str| {
+            let mut m = HashMap::new();
+            m.insert("tgl".to_string(), tgl.to_string());
+            m.insert("nama".to_string(), nama.to_string());
+            m
+        };
+        app.report.dictionary.data_sources = vec![DataSource {
+            name: "detail".into(),
+            alias: "detail".into(),
+            columns: vec![
+                Column { name: "tgl".into(), data_type: "System.String".into() },
+                Column { name: "nama".into(), data_type: "System.String".into() },
+            ],
+            rows: vec![row("A", "x"), row("A", "y"), row("B", "z")],
+        }];
+
+        let sheets = build_sheets(&app);
+        let items: Vec<&Item> = sheets.iter().flat_map(|s| s.items.iter()).collect();
+        let headers: Vec<usize> = items
+            .iter()
+            .filter(|i| i.comp.parent_band_id.as_deref() == Some("gh"))
+            .map(|i| i.rows["detail"])
+            .collect();
+        let data = items.iter().filter(|i| i.comp.parent_band_id.as_deref() == Some("db")).count();
+        assert_eq!(headers, vec![0, 2], "one header per group, starting at its first row");
+        assert_eq!(data, 3, "every row prints once inside its group");
+    }
+#[test]
     fn summarise_preview_sheets() {
         let Ok(path) = std::env::var("NUSA_PREVIEW_FILE") else { return };
         let app = ReportDesignerApp::new(None, Some(path));

@@ -62,6 +62,8 @@ pub enum BandType {
     Footer,
     PageFooter,
     ReportSummary,
+    GroupHeader,
+    GroupFooter,
 }
 
 impl BandType {
@@ -74,6 +76,8 @@ impl BandType {
             BandType::Footer => "Footer",
             BandType::PageFooter => "Page Footer",
             BandType::ReportSummary => "Report Summary",
+            BandType::GroupHeader => "Group Header",
+            BandType::GroupFooter => "Group Footer",
         }
     }
 
@@ -86,6 +90,8 @@ impl BandType {
             BandType::Footer => [142, 68, 173, 255],       // Purple
             BandType::PageFooter => [44, 62, 80, 255],     // Dark Slate
             BandType::ReportSummary => [192, 57, 43, 255], // Red
+            BandType::GroupHeader => [22, 160, 133, 255],  // Teal
+            BandType::GroupFooter => [127, 140, 141, 255], // Grey
         }
     }
 
@@ -98,6 +104,8 @@ impl BandType {
             BandType::Footer => "StiFooterBand",
             BandType::PageFooter => "StiPageFooterBand",
             BandType::ReportSummary => "StiReportSummaryBand",
+            BandType::GroupHeader => "StiGroupHeaderBand",
+            BandType::GroupFooter => "StiGroupFooterBand",
         }
     }
 }
@@ -110,6 +118,8 @@ pub struct Band {
     pub top: f32, // mm
     pub height: f32, // mm
     pub data_source: Option<String>,
+    /// Group bands: the column that defines the groups, as Source.Column.
+    pub group_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,6 +238,8 @@ pub struct Component {
     pub checked: bool,
     /// Read the text as HTML (b, i, u, font, span, br ...). Off: the text is shown as written.
     pub allow_html_tags: bool,
+    /// Picture data (PNG or JPEG) of an image component. `None` when the image is empty.
+    pub image_data: Option<Vec<u8>>,
     pub parent_band_id: Option<String>,
 }
 
@@ -256,6 +268,7 @@ impl Default for Component {
             barcode_format: "Code128".to_string(),
             checked: false,
             allow_html_tags: false,
+            image_data: None,
             parent_band_id: None,
         }
     }
@@ -359,6 +372,7 @@ impl Default for Report {
             top: 10.0,
             height: 22.0,
             data_source: None,
+            group_by: None,
         };
 
         // Component in Report Title Band: Company Title and Report Header
@@ -385,6 +399,7 @@ impl Default for Report {
             barcode_format: "Code128".to_string(),
             checked: false,
             allow_html_tags: false,
+            image_data: None,
             parent_band_id: Some("band_report_title".to_string()),
         };
 
@@ -411,6 +426,7 @@ impl Default for Report {
             barcode_format: "Code128".to_string(),
             checked: false,
             allow_html_tags: false,
+            image_data: None,
             parent_band_id: Some("band_report_title".to_string()),
         };
 
@@ -422,6 +438,7 @@ impl Default for Report {
             top: 35.0,
             height: 10.0,
             data_source: Some("Orders".to_string()),
+            group_by: None,
         };
 
         let h_order_id = Component {
@@ -447,6 +464,7 @@ impl Default for Report {
             barcode_format: "Code128".to_string(),
             checked: false,
             allow_html_tags: false,
+            image_data: None,
             parent_band_id: Some("band_header".to_string()),
         };
 
@@ -473,6 +491,7 @@ impl Default for Report {
             barcode_format: "Code128".to_string(),
             checked: false,
             allow_html_tags: false,
+            image_data: None,
             parent_band_id: Some("band_header".to_string()),
         };
 
@@ -499,6 +518,7 @@ impl Default for Report {
             barcode_format: "Code128".to_string(),
             checked: false,
             allow_html_tags: false,
+            image_data: None,
             parent_band_id: Some("band_header".to_string()),
         };
 
@@ -525,6 +545,7 @@ impl Default for Report {
             barcode_format: "Code128".to_string(),
             checked: false,
             allow_html_tags: false,
+            image_data: None,
             parent_band_id: Some("band_header".to_string()),
         };
 
@@ -551,6 +572,7 @@ impl Default for Report {
             barcode_format: "Code128".to_string(),
             checked: false,
             allow_html_tags: false,
+            image_data: None,
             parent_band_id: Some("band_header".to_string()),
         };
 
@@ -577,6 +599,7 @@ impl Default for Report {
             barcode_format: "Code128".to_string(),
             checked: false,
             allow_html_tags: false,
+            image_data: None,
             parent_band_id: Some("band_header".to_string()),
         };
 
@@ -588,6 +611,7 @@ impl Default for Report {
             top: 47.0,
             height: 9.0,
             data_source: Some("Orders".to_string()),
+            group_by: None,
         };
 
         let d_order_id = Component {
@@ -613,6 +637,7 @@ impl Default for Report {
             barcode_format: "Code128".to_string(),
             checked: false,
             allow_html_tags: false,
+            image_data: None,
             parent_band_id: Some("band_data".to_string()),
         };
 
@@ -639,6 +664,7 @@ impl Default for Report {
             barcode_format: "Code128".to_string(),
             checked: false,
             allow_html_tags: false,
+            image_data: None,
             parent_band_id: Some("band_data".to_string()),
         };
 
@@ -665,6 +691,7 @@ impl Default for Report {
             barcode_format: "Code128".to_string(),
             checked: false,
             allow_html_tags: false,
+            image_data: None,
             parent_band_id: Some("band_data".to_string()),
         };
 
@@ -691,6 +718,7 @@ impl Default for Report {
             barcode_format: "Code128".to_string(),
             checked: false,
             allow_html_tags: false,
+            image_data: None,
             parent_band_id: Some("band_data".to_string()),
         };
 
@@ -717,6 +745,7 @@ impl Default for Report {
             barcode_format: "Code128".to_string(),
             checked: false,
             allow_html_tags: false,
+            image_data: None,
             parent_band_id: Some("band_data".to_string()),
         };
 
@@ -743,6 +772,7 @@ impl Default for Report {
             barcode_format: "Code128".to_string(),
             checked: false,
             allow_html_tags: false,
+            image_data: None,
             parent_band_id: Some("band_data".to_string()),
         };
 
@@ -754,6 +784,7 @@ impl Default for Report {
             top: 60.0,
             height: 12.0,
             data_source: Some("Orders".to_string()),
+            group_by: None,
         };
 
         let f_label = Component {
@@ -779,6 +810,7 @@ impl Default for Report {
             barcode_format: "Code128".to_string(),
             checked: false,
             allow_html_tags: false,
+            image_data: None,
             parent_band_id: Some("band_footer".to_string()),
         };
 
@@ -805,6 +837,7 @@ impl Default for Report {
             barcode_format: "Code128".to_string(),
             checked: false,
             allow_html_tags: false,
+            image_data: None,
             parent_band_id: Some("band_footer".to_string()),
         };
 
@@ -816,6 +849,7 @@ impl Default for Report {
             top: 275.0,
             height: 12.0,
             data_source: None,
+            group_by: None,
         };
 
         let pf_info = Component {
@@ -841,6 +875,7 @@ impl Default for Report {
             barcode_format: "Code128".to_string(),
             checked: false,
             allow_html_tags: false,
+            image_data: None,
             parent_band_id: Some("band_page_footer".to_string()),
         };
 
@@ -867,6 +902,7 @@ impl Default for Report {
             barcode_format: "Code128".to_string(),
             checked: false,
             allow_html_tags: false,
+            image_data: None,
             parent_band_id: Some("band_page_footer".to_string()),
         };
 
@@ -894,6 +930,7 @@ impl Default for Report {
             barcode_format: "Code128".to_string(),
             checked: false,
             allow_html_tags: false,
+            image_data: None,
             parent_band_id: None,
         };
 

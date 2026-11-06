@@ -37,6 +37,17 @@ impl CanvasView {
     }
 
     fn draw_canvas(app: &mut ReportDesignerApp, ui: &mut egui::Ui) {
+        // Decode pictures that are not loaded yet, before anything else is borrowed.
+        let missing: Vec<Vec<u8>> = app
+            .current_page()
+            .components
+            .iter()
+            .filter_map(|c| c.image_data.as_ref())
+            .filter(|b| !app.images.contains_key(&super::images::key(b)))
+            .cloned()
+            .collect();
+        super::images::ensure_loaded(ui.ctx(), &mut app.images, &missing);
+
         let zoom = app.zoom;
         let page = app.current_page();
         let (page_w_mm, page_h_mm) = page.effective_dimensions();
@@ -202,16 +213,19 @@ impl CanvasView {
                         Color32::BLACK,
                     );
                 }
-                ComponentType::Image => {
-                    painter.rect_stroke(c_rect, 0.0, Stroke::new(1.0_f32, theme::RULE));
-                    painter.text(
-                        c_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        "Image",
-                        egui::FontId::proportional(11.0 * zoom),
-                        Color32::GRAY,
-                    );
-                }
+                ComponentType::Image => match comp.image_data.as_ref().and_then(|b| app.images.get(&super::images::key(b))) {
+                    Some(texture) => super::images::paint(&painter, texture, c_rect),
+                    None => {
+                        painter.rect_stroke(c_rect, 0.0, Stroke::new(1.0_f32, theme::RULE));
+                        painter.text(
+                            c_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "Image",
+                            egui::FontId::proportional(11.0 * zoom),
+                            Color32::GRAY,
+                        );
+                    }
+                },
                 ComponentType::Shape => {
                     let border_c = Color32::from_rgba_premultiplied(comp.border_color[0], comp.border_color[1], comp.border_color[2], comp.border_color[3]);
                     let fill_c = Color32::from_rgba_premultiplied(comp.bg_color[0], comp.bg_color[1], comp.bg_color[2], comp.bg_color[3]);
@@ -268,6 +282,11 @@ impl CanvasView {
                 }
             }
 
+            // Other selected components get an outline; the primary one gets handles below.
+            if app.extra_selected.contains(&comp.id) {
+                painter.rect_stroke(c_rect, 0.0, Stroke::new(1.5_f32, theme::ACCENT));
+            }
+
             // Selection Bounding Box & 8 Grab Handles (Stimulsoft Sapphire Blue)
             if app.selected_component_id.as_deref() == Some(&comp.id) {
                 let sel_color = theme::ACCENT;
@@ -299,6 +318,15 @@ impl CanvasView {
         }
 
         // 7. Interactive Mouse Events: Selection, Dragging, Resizing, Insertion
+        // Rubber band while it is being dragged.
+        if let DragState::Marquee { start } = app.drag_state {
+            if let Some(now) = response.ctx.input(|i| i.pointer.interact_pos()) {
+                let r = Rect::from_two_pos(Pos2::new(start.0, start.1), now);
+                painter.rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(0x1A, 0x73, 0xE8, 30));
+                painter.rect_stroke(r, 0.0, Stroke::new(1.0_f32, theme::ACCENT));
+            }
+        }
+
         Self::handle_mouse_interactions(app, &response, page_rect, mm_to_px);
     }
 
@@ -431,6 +459,7 @@ impl CanvasView {
                             top: snap_y,
                             height: 15.0,
                             data_source: None,
+                            group_by: None,
                         };
 
                         let new_id = band.id.clone();
@@ -452,8 +481,8 @@ impl CanvasView {
                         }
 
                         if let Some(c_id) = clicked_comp_id {
-                            app.selected_component_id = Some(c_id);
-                            app.selected_band_id = None;
+                            let additive = response.ctx.input(|i| i.modifiers.ctrl || i.modifiers.command);
+                            app.select_component(&c_id, additive);
                         } else {
                             let mut clicked_band_id = None;
                             for band in &app.current_page().bands {
@@ -510,13 +539,26 @@ impl CanvasView {
                 }
 
                 if let Some((c_id, initial_rect)) = found_comp {
+                    // Pressing a component that is not selected selects it alone; pressing one that is
+                    // selected moves the whole selection.
+                    if !app.selected_ids().contains(&c_id) {
+                        app.select_component(&c_id, false);
+                    }
                     app.push_undo();
-                    app.selected_component_id = Some(c_id.clone());
                     app.selected_band_id = None;
+                    let others: Vec<(String, RectMm)> = {
+                        let page = app.current_page();
+                        app.selected_ids()
+                            .into_iter()
+                            .filter(|id| *id != c_id)
+                            .filter_map(|id| page.components.iter().find(|c| c.id == id).map(|c| (id, c.rect)))
+                            .collect()
+                    };
                     app.drag_state = DragState::Moving {
                         comp_id: c_id,
                         initial_rect,
                         mouse_start_mm: (mx_mm, my_mm),
+                        others,
                     };
                     return;
                 }
@@ -528,6 +570,12 @@ impl CanvasView {
                         hit_band_resize = Some((band.id.clone(), band.height));
                         break;
                     }
+                }
+
+                if hit_band_resize.is_none() {
+                    // Nothing under the press: start a rubber-band selection.
+                    app.drag_state = DragState::Marquee { start: (press.x, press.y) };
+                    return;
                 }
 
                 if let Some((b_id, b_height)) = hit_band_resize {
@@ -545,7 +593,7 @@ impl CanvasView {
         if response.dragged() {
             if let Some((mx_mm, my_mm)) = mouse_mm {
                 match app.drag_state.clone() {
-                    DragState::Moving { comp_id, initial_rect, mouse_start_mm } => {
+                    DragState::Moving { comp_id, initial_rect, mouse_start_mm, others } => {
                         let dx = mx_mm - mouse_start_mm.0;
                         let dy = my_mm - mouse_start_mm.1;
                         let mut new_x = initial_rect.x + dx;
@@ -559,6 +607,14 @@ impl CanvasView {
                         if let Some(comp) = app.current_page_mut().components.iter_mut().find(|c| c.id == comp_id) {
                             comp.rect.x = new_x.max(0.0);
                             comp.rect.y = new_y.max(0.0);
+                        }
+                        // The other selected components keep their offset from the dragged one.
+                        let (ddx, ddy) = (new_x.max(0.0) - initial_rect.x, new_y.max(0.0) - initial_rect.y);
+                        for (oid, orect) in &others {
+                            if let Some(c) = app.current_page_mut().components.iter_mut().find(|c| &c.id == oid) {
+                                c.rect.x = (orect.x + ddx).max(0.0);
+                                c.rect.y = (orect.y + ddy).max(0.0);
+                            }
                         }
                     }
                     DragState::Resizing { comp_id, handle, initial_rect, mouse_start_mm } => {
@@ -640,6 +696,25 @@ impl CanvasView {
         }
 
         if response.drag_stopped() {
+            if let DragState::Marquee { start } = app.drag_state.clone() {
+                let end = response.ctx.input(|i| i.pointer.interact_pos()).unwrap_or(Pos2::new(start.0, start.1));
+                let (x0, x1) = (start.0.min(end.x), start.0.max(end.x));
+                let (y0, y1) = (start.1.min(end.y), start.1.max(end.y));
+                let (lx0, lx1) = ((x0 - page_rect.min.x) / mm_to_px, (x1 - page_rect.min.x) / mm_to_px);
+                let (ly0, ly1) = ((y0 - page_rect.min.y) / mm_to_px, (y1 - page_rect.min.y) / mm_to_px);
+                let ids: Vec<String> = app
+                    .current_page()
+                    .components
+                    .iter()
+                    .filter(|c| c.rect.x < lx1 && c.rect.x + c.rect.w > lx0 && c.rect.y < ly1 && c.rect.y + c.rect.h > ly0)
+                    .map(|c| c.id.clone())
+                    .collect();
+                if ids.is_empty() {
+                    app.clear_component_selection();
+                } else {
+                    app.select_many(ids);
+                }
+            }
             app.drag_state = DragState::None;
             app.refresh_code_buffer();
         }

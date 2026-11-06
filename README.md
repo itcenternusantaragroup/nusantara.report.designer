@@ -1,6 +1,6 @@
 # Nusantara Report Designer
 
-A desktop designer for `.mrt` report templates. Lay out bands and fields, preview with live data, and export to HTML or text.
+A desktop designer for `.mrt` report templates. Lay out bands and fields, preview with live data, and export to PDF, HTML, or text.
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 ![Rust](https://img.shields.io/badge/Rust-2024_edition-orange.svg)
@@ -17,6 +17,7 @@ A desktop designer for `.mrt` report templates. Lay out bands and fields, previe
 - Grid, snap to grid, rulers, zoom, and fit page.
 - Text formatting: font, size, bold, italic, underline, alignment, text and fill colour, and per-side borders.
 - Undo and redo, copy, paste, duplicate, and multiple pages.
+- Multi-select with Ctrl+click or a rubber-band drag; move the selection together. The Arrange menu aligns, distributes, and changes z-order.
 - Outline view of bands and components.
 
 **Rich text (HTML tags)**
@@ -32,7 +33,7 @@ A desktop designer for `.mrt` report templates. Lay out bands and fields, previe
 **Preview**
 - All pages are shown with pagination. Data bands repeat per row and continue on the next page when needed.
 - Page header and footer repeat on every page, with page number and total page count filled in.
-- Export to HTML (absolute positioning per component) or to plain text.
+- Export to PDF (vector output; Arial is embedded when found in the Windows font folder), HTML (absolute positioning per component), or plain text.
 
 **File formats**
 - Reads `.mrt` files in JSON and XML formats.

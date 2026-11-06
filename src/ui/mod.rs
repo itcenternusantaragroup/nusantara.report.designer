@@ -1,11 +1,15 @@
 pub mod about;
+pub mod arrange;
 pub mod brand;
 pub mod canvas;
 pub mod code_view;
 pub mod designer;
 pub mod dialogs;
+pub mod dictionary_panel;
 pub mod html_editor;
 pub mod icons;
+pub mod images;
+pub mod pdf_export;
 pub mod preview;
 pub mod properties;
 pub mod richtext;
