@@ -1,0 +1,665 @@
+use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
+use uuid::Uuid;
+
+use crate::model::*;
+use super::designer::{ActiveTool, DragState, ReportDesignerApp, ResizeHandle};
+use super::theme;
+
+pub struct CanvasView;
+
+impl CanvasView {
+    pub fn show(app: &mut ReportDesignerApp, ctx: &egui::Context) {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(&ctx.style())
+                .fill(theme::DESK))
+            .show(ctx, |ui| {
+                if app.fit_to_window {
+                    app.zoom = Self::fit_zoom(app, ui.available_size());
+                }
+                egui::ScrollArea::both()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        Self::draw_canvas(app, ui);
+                    });
+            });
+    }
+
+    /// Largest zoom at which the whole current page fits in `avail`,
+    /// leaving room for rulers and the drop shadow (same margins as `draw_canvas`).
+    fn fit_zoom(app: &ReportDesignerApp, avail: Vec2) -> f32 {
+        let (page_w_mm, page_h_mm) = app.current_page().effective_dimensions();
+        let ruler_size = if app.show_rulers { 22.0 } else { 0.0 };
+        let usable_w = avail.x - (ruler_size + 30.0) - 80.0;
+        let usable_h = avail.y - (ruler_size + 20.0) - 80.0;
+        let zx = usable_w / (page_w_mm * 3.78);
+        let zy = usable_h / (page_h_mm * 3.78);
+        zx.min(zy).clamp(0.3, 3.0)
+    }
+
+    fn draw_canvas(app: &mut ReportDesignerApp, ui: &mut egui::Ui) {
+        let zoom = app.zoom;
+        let page = app.current_page();
+        let (page_w_mm, page_h_mm) = page.effective_dimensions();
+
+        // 1 mm = 3.78 px at 96 DPI
+        let mm_to_px = 3.78 * zoom;
+        let page_w_px = page_w_mm * mm_to_px;
+        let page_h_px = page_h_mm * mm_to_px;
+
+        let ruler_size = if app.show_rulers { 22.0 } else { 0.0 };
+        // Centre the sheet horizontally when it is narrower than the viewport; never closer than the ruler.
+        let centred_x = ((ui.available_width() - page_w_px) * 0.5).max(0.0);
+        let min_x: f32 = ruler_size + 30.0;
+        let offset = Pos2::new(min_x.max(centred_x), ruler_size + 20.0);
+
+        let total_size = Vec2::new(page_w_px + offset.x + 80.0, page_h_px + offset.y + 80.0);
+        let (response, painter) = ui.allocate_painter(total_size, egui::Sense::click_and_drag());
+
+        // `offset` is relative to the canvas origin, not to the window.
+        let page_rect = Rect::from_min_size(response.rect.min + offset.to_vec2(), Vec2::new(page_w_px, page_h_px));
+
+        // 1. Page: a soft two-layer shadow so the sheet sits on the desk.
+        for (grow, alpha) in [(3.0_f32, 10_u8), (1.0, 18)] {
+            let shadow_rect = page_rect.translate(Vec2::new(0.0, 2.0)).expand(grow);
+            painter.rect_filled(shadow_rect, 2.0, Color32::from_black_alpha(alpha));
+        }
+        painter.rect_filled(page_rect, 0.0, theme::PAPER);
+        painter.rect_stroke(page_rect, 0.0, Stroke::new(1.0_f32, theme::RULE));
+
+        // 2. Margins: a faint guide inside the page.
+        let margin_rect = Rect::from_min_max(
+            Pos2::new(page_rect.min.x + page.margins.left * mm_to_px, page_rect.min.y + page.margins.top * mm_to_px),
+            Pos2::new(page_rect.max.x - page.margins.right * mm_to_px, page_rect.max.y - page.margins.bottom * mm_to_px),
+        );
+        painter.rect_stroke(margin_rect, 0.0, Stroke::new(1.0_f32, Color32::from_rgb(0xEC, 0xEF, 0xF3)));
+
+        // 3. Grid dots
+        if app.show_grid {
+            let grid_step_px = app.grid_size_mm * mm_to_px;
+            if grid_step_px >= 6.0 {
+                let dot_color = Color32::from_rgb(0xDD, 0xE1, 0xE7);
+                let mut x = page_rect.min.x + grid_step_px;
+                while x < page_rect.max.x {
+                    let mut y = page_rect.min.y + grid_step_px;
+                    while y < page_rect.max.y {
+                        painter.circle_filled(Pos2::new(x, y), 0.75, dot_color);
+                        y += grid_step_px;
+                    }
+                    x += grid_step_px;
+                }
+            }
+        }
+
+        // 4. Draw Bands (Stimulsoft Style Colored Header Ribbons)
+        for band in &app.current_page().bands {
+            let b_top_px = page_rect.min.y + band.top * mm_to_px;
+            let b_height_px = band.height * mm_to_px;
+            let b_width_px = page.printable_width() * mm_to_px;
+            let b_left_px = page_rect.min.x + page.margins.left * mm_to_px;
+
+            let band_rect = Rect::from_min_size(Pos2::new(b_left_px, b_top_px), Vec2::new(b_width_px, b_height_px));
+
+            let band_color_arr = band.band_type.default_color();
+            let band_color = Color32::from_rgba_premultiplied(band_color_arr[0], band_color_arr[1], band_color_arr[2], 255);
+
+            // Sleek Band Header Banner Strip
+            let header_height = 16.0;
+            let header_rect = Rect::from_min_size(Pos2::new(b_left_px, b_top_px - header_height), Vec2::new(b_width_px, header_height));
+            painter.rect_filled(header_rect, 1.0, band_color);
+
+            let label = if let Some(ds) = &band.data_source {
+                format!("{}: {} [{ds}]", band.name, band.band_type.display_name())
+            } else {
+                format!("{}: {}", band.name, band.band_type.display_name())
+            };
+
+            painter.text(
+                header_rect.left_center() + Vec2::new(6.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+                label,
+                egui::FontId::proportional(11.0),
+                Color32::WHITE,
+            );
+
+            // Band body outline
+            let is_band_sel = app.selected_band_id.as_deref() == Some(&band.id);
+            if is_band_sel {
+                painter.rect_filled(band_rect, 0.0, Color32::from_rgba_unmultiplied(band_color_arr[0], band_color_arr[1], band_color_arr[2], 20));
+                painter.rect_stroke(band_rect, 0.0, Stroke::new(1.5_f32, band_color));
+            } else {
+                painter.rect_stroke(band_rect, 0.0, Stroke::new(1.0_f32, Color32::from_rgb(0xE6, 0xE9, 0xEE)));
+            }
+
+            // Band bottom edge resize indicator
+            let bottom_edge_rect = Rect::from_min_size(
+                Pos2::new(b_left_px, b_top_px + b_height_px - 2.0),
+                Vec2::new(b_width_px, 3.0),
+            );
+            painter.rect_filled(bottom_edge_rect, 0.0, band_color);
+        }
+
+        // 5. Draw Components
+        for comp in &app.current_page().components {
+            let comp_x_px = page_rect.min.x + comp.rect.x * mm_to_px;
+            let comp_y_px = page_rect.min.y + comp.rect.y * mm_to_px;
+            let comp_w_px = comp.rect.w * mm_to_px;
+            let comp_h_px = comp.rect.h * mm_to_px;
+
+            let c_rect = Rect::from_min_size(Pos2::new(comp_x_px, comp_y_px), Vec2::new(comp_w_px, comp_h_px));
+
+            // Background Fill
+            if comp.bg_color[3] > 0 {
+                let fill_c = Color32::from_rgba_premultiplied(comp.bg_color[0], comp.bg_color[1], comp.bg_color[2], comp.bg_color[3]);
+                painter.rect_filled(c_rect, 0.0, fill_c);
+            }
+
+            // Borders
+            if comp.border_sides.has_any() {
+                let border_c = Color32::from_rgba_premultiplied(comp.border_color[0], comp.border_color[1], comp.border_color[2], comp.border_color[3]);
+                let bw = (comp.border_width * mm_to_px).max(1.0);
+                let stroke = Stroke::new(bw, border_c);
+
+                if comp.border_sides.top {
+                    painter.line_segment([c_rect.left_top(), c_rect.right_top()], stroke);
+                }
+                if comp.border_sides.bottom {
+                    painter.line_segment([c_rect.left_bottom(), c_rect.right_bottom()], stroke);
+                }
+                if comp.border_sides.left {
+                    painter.line_segment([c_rect.left_top(), c_rect.left_bottom()], stroke);
+                }
+                if comp.border_sides.right {
+                    painter.line_segment([c_rect.right_top(), c_rect.right_bottom()], stroke);
+                }
+            }
+
+            // Draw Content by Type
+            match comp.comp_type {
+                ComponentType::Text => {
+                    let tc = Color32::from_rgba_premultiplied(comp.text_color[0], comp.text_color[1], comp.text_color[2], comp.text_color[3]);
+                    let font_size_px = (comp.font_size * 1.33 * zoom).max(8.0);
+                    let font_id = egui::FontId::proportional(font_size_px);
+
+                    let align2 = match (comp.align_h, comp.align_v) {
+                        (AlignH::Left, AlignV::Top) => egui::Align2::LEFT_TOP,
+                        (AlignH::Left, AlignV::Center) => egui::Align2::LEFT_CENTER,
+                        (AlignH::Left, AlignV::Bottom) => egui::Align2::LEFT_BOTTOM,
+                        (AlignH::Center, AlignV::Top) => egui::Align2::CENTER_TOP,
+                        (AlignH::Center, AlignV::Center) => egui::Align2::CENTER_CENTER,
+                        (AlignH::Center, AlignV::Bottom) => egui::Align2::CENTER_BOTTOM,
+                        (AlignH::Right, AlignV::Top) => egui::Align2::RIGHT_TOP,
+                        (AlignH::Right, AlignV::Center) => egui::Align2::RIGHT_CENTER,
+                        (AlignH::Right, AlignV::Bottom) => egui::Align2::RIGHT_BOTTOM,
+                        (AlignH::Justify, AlignV::Center) => egui::Align2::LEFT_CENTER,
+                        (AlignH::Justify, AlignV::Top) => egui::Align2::LEFT_TOP,
+                        (AlignH::Justify, AlignV::Bottom) => egui::Align2::LEFT_BOTTOM,
+                    };
+
+                    let text_pos = match align2 {
+                        egui::Align2::LEFT_TOP => c_rect.left_top() + Vec2::new(2.0, 2.0),
+                        egui::Align2::LEFT_CENTER => c_rect.left_center() + Vec2::new(2.0, 0.0),
+                        egui::Align2::LEFT_BOTTOM => c_rect.left_bottom() + Vec2::new(2.0, -2.0),
+                        egui::Align2::CENTER_TOP => c_rect.center_top() + Vec2::new(0.0, 2.0),
+                        egui::Align2::CENTER_CENTER => c_rect.center(),
+                        egui::Align2::CENTER_BOTTOM => c_rect.center_bottom() + Vec2::new(0.0, -2.0),
+                        egui::Align2::RIGHT_TOP => c_rect.right_top() + Vec2::new(-2.0, 2.0),
+                        egui::Align2::RIGHT_CENTER => c_rect.right_center() + Vec2::new(-2.0, 0.0),
+                        egui::Align2::RIGHT_BOTTOM => c_rect.right_bottom() + Vec2::new(-2.0, -2.0),
+                    };
+
+                    painter.with_clip_rect(c_rect).text(text_pos, align2, &comp.text, font_id, tc);
+                }
+                ComponentType::Barcode => {
+                    let bc_rect = c_rect.shrink(2.0);
+                    let mut bx = bc_rect.min.x;
+                    let bar_w = 2.0 * zoom;
+                    let mut toggle = false;
+                    while bx < bc_rect.max.x {
+                        if toggle {
+                            painter.rect_filled(
+                                Rect::from_min_max(Pos2::new(bx, bc_rect.min.y), Pos2::new(bx + bar_w, bc_rect.max.y - 11.0)),
+                                0.0,
+                                Color32::BLACK,
+                            );
+                        }
+                        bx += bar_w + (if (bx as usize) % 3 == 0 { 1.5 * bar_w } else { 0.5 * bar_w });
+                        toggle = !toggle;
+                    }
+                    painter.text(
+                        bc_rect.center_bottom() + Vec2::new(0.0, -1.0),
+                        egui::Align2::CENTER_BOTTOM,
+                        &comp.text,
+                        egui::FontId::monospace(9.0 * zoom),
+                        Color32::BLACK,
+                    );
+                }
+                ComponentType::Image => {
+                    painter.rect_stroke(c_rect, 0.0, Stroke::new(1.0_f32, theme::RULE));
+                    painter.text(
+                        c_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "Image",
+                        egui::FontId::proportional(11.0 * zoom),
+                        Color32::GRAY,
+                    );
+                }
+                ComponentType::Shape => {
+                    let border_c = Color32::from_rgba_premultiplied(comp.border_color[0], comp.border_color[1], comp.border_color[2], comp.border_color[3]);
+                    let fill_c = Color32::from_rgba_premultiplied(comp.bg_color[0], comp.bg_color[1], comp.bg_color[2], comp.bg_color[3]);
+                    let bw = (comp.border_width * mm_to_px).max(1.0);
+                    let stroke = Stroke::new(bw, border_c);
+
+                    match comp.shape_kind {
+                        ShapeKind::Rectangle => {
+                            painter.rect(c_rect, 0.0, fill_c, stroke);
+                        }
+                        ShapeKind::RoundedRectangle => {
+                            painter.rect(c_rect, 6.0 * zoom, fill_c, stroke);
+                        }
+                        ShapeKind::Ellipse => {
+                            painter.circle(c_rect.center(), (c_rect.width() * 0.5).min(c_rect.height() * 0.5), fill_c, stroke);
+                        }
+                        ShapeKind::Triangle => {
+                            let p1 = c_rect.center_top();
+                            let p2 = c_rect.right_bottom();
+                            let p3 = c_rect.left_bottom();
+                            painter.add(egui::Shape::convex_polygon(vec![p1, p2, p3], fill_c, stroke));
+                        }
+                    }
+                }
+                ComponentType::Line => {
+                    let border_c = Color32::from_rgba_premultiplied(comp.border_color[0], comp.border_color[1], comp.border_color[2], comp.border_color[3]);
+                    let bw = (comp.border_width * mm_to_px).max(1.5);
+                    // Draw along the longer side, so vertical lines (zero width) are visible.
+                    let (a, b) = if c_rect.width() < c_rect.height() {
+                        (c_rect.center_top(), c_rect.center_bottom())
+                    } else {
+                        (c_rect.left_center(), c_rect.right_center())
+                    };
+                    painter.line_segment([a, b], Stroke::new(bw, border_c));
+                }
+                ComponentType::CheckBox => {
+                    let box_size = 14.0 * zoom;
+                    let box_rect = Rect::from_min_size(c_rect.left_center() + Vec2::new(0.0, -box_size * 0.5), Vec2::splat(box_size));
+                    painter.rect(box_rect, 1.0, Color32::WHITE, Stroke::new(1.0_f32, Color32::BLACK));
+                    if comp.checked {
+                        painter.text(box_rect.center(), egui::Align2::CENTER_CENTER, "✔", egui::FontId::proportional(12.0 * zoom), Color32::BLACK);
+                    }
+                    painter.text(
+                        box_rect.right_center() + Vec2::new(4.0, 0.0),
+                        egui::Align2::LEFT_CENTER,
+                        &comp.text,
+                        egui::FontId::proportional(10.0 * zoom),
+                        Color32::BLACK,
+                    );
+                }
+                ComponentType::Table => {
+                    painter.rect_stroke(c_rect, 0.0, Stroke::new(1.0_f32, Color32::BLACK));
+                    painter.text(c_rect.center(), egui::Align2::CENTER_CENTER, "Table Grid", egui::FontId::proportional(11.0 * zoom), Color32::GRAY);
+                }
+            }
+
+            // Selection Bounding Box & 8 Grab Handles (Stimulsoft Sapphire Blue)
+            if app.selected_component_id.as_deref() == Some(&comp.id) {
+                let sel_color = theme::ACCENT;
+                painter.rect_stroke(c_rect, 0.0, Stroke::new(1.5_f32, sel_color));
+
+                let handle_size = 6.0;
+                let handles = [
+                    c_rect.left_top(),
+                    c_rect.center_top(),
+                    c_rect.right_top(),
+                    c_rect.right_center(),
+                    c_rect.right_bottom(),
+                    c_rect.center_bottom(),
+                    c_rect.left_bottom(),
+                    c_rect.left_center(),
+                ];
+
+                for hp in handles {
+                    let h_rect = Rect::from_center_size(hp, Vec2::splat(handle_size));
+                    painter.rect_filled(h_rect, 0.0, Color32::WHITE);
+                    painter.rect_stroke(h_rect, 0.0, Stroke::new(1.2_f32, sel_color));
+                }
+            }
+        }
+
+        // 6. Draw Rulers
+        if app.show_rulers {
+            Self::draw_rulers(app, &painter, page_rect, ruler_size, mm_to_px);
+        }
+
+        // 7. Interactive Mouse Events: Selection, Dragging, Resizing, Insertion
+        Self::handle_mouse_interactions(app, &response, page_rect, mm_to_px);
+    }
+
+    fn draw_rulers(app: &ReportDesignerApp, painter: &egui::Painter, page_rect: Rect, ruler_size: f32, mm_to_px: f32) {
+        let ruler_bg = theme::CHROME;
+        let tick_c = theme::MUTED;
+
+        // Top Ruler
+        let top_ruler_rect = Rect::from_min_max(
+            Pos2::new(page_rect.min.x, page_rect.min.y - ruler_size),
+            Pos2::new(page_rect.max.x, page_rect.min.y),
+        );
+        painter.rect_filled(top_ruler_rect, 0.0, ruler_bg);
+        painter.line_segment([top_ruler_rect.left_bottom(), top_ruler_rect.right_bottom()], Stroke::new(1.0_f32, tick_c));
+
+        let mut mm = 0.0;
+        let page_w_mm = app.current_page().effective_dimensions().0;
+        while mm <= page_w_mm {
+            let x = page_rect.min.x + mm * mm_to_px;
+            let is_cm = (mm % 10.0).abs() < 0.01;
+            let tick_h = if is_cm { ruler_size * 0.6 } else { ruler_size * 0.3 };
+            painter.line_segment([Pos2::new(x, page_rect.min.y - tick_h), Pos2::new(x, page_rect.min.y)], Stroke::new(1.0_f32, tick_c));
+
+            if is_cm && mm > 0.0 {
+                let cm_val = (mm / 10.0) as u32;
+                painter.text(Pos2::new(x + 2.0, page_rect.min.y - ruler_size + 2.0), egui::Align2::LEFT_TOP, format!("{cm_val}"), egui::FontId::proportional(9.0), tick_c);
+            }
+            mm += 2.0;
+        }
+
+        // Left Ruler
+        let left_ruler_rect = Rect::from_min_max(
+            Pos2::new(page_rect.min.x - ruler_size, page_rect.min.y),
+            Pos2::new(page_rect.min.x, page_rect.max.y),
+        );
+        painter.rect_filled(left_ruler_rect, 0.0, ruler_bg);
+        painter.line_segment([left_ruler_rect.right_top(), left_ruler_rect.right_bottom()], Stroke::new(1.0_f32, tick_c));
+
+        let mut mm_y = 0.0;
+        let page_h_mm = app.current_page().effective_dimensions().1;
+        while mm_y <= page_h_mm {
+            let y = page_rect.min.y + mm_y * mm_to_px;
+            let is_cm = (mm_y % 10.0).abs() < 0.01;
+            let tick_w = if is_cm { ruler_size * 0.6 } else { ruler_size * 0.3 };
+            painter.line_segment([Pos2::new(page_rect.min.x - tick_w, y), Pos2::new(page_rect.min.x, y)], Stroke::new(1.0_f32, tick_c));
+
+            if is_cm && mm_y > 0.0 {
+                let cm_val = (mm_y / 10.0) as u32;
+                painter.text(Pos2::new(page_rect.min.x - ruler_size + 2.0, y + 2.0), egui::Align2::LEFT_TOP, format!("{cm_val}"), egui::FontId::proportional(9.0), tick_c);
+            }
+            mm_y += 2.0;
+        }
+    }
+
+    fn handle_mouse_interactions(
+        app: &mut ReportDesignerApp,
+        response: &egui::Response,
+        page_rect: Rect,
+        mm_to_px: f32,
+    ) {
+        let mouse_pos = response.interact_pointer_pos();
+
+        let mouse_mm = mouse_pos.map(|p| {
+            (
+                (p.x - page_rect.min.x) / mm_to_px,
+                (p.y - page_rect.min.y) / mm_to_px,
+            )
+        });
+
+        // 1. Tool Insertion
+        if response.clicked() {
+            if let Some((mx_mm, my_mm)) = mouse_mm {
+                match app.active_tool.clone() {
+                    ActiveTool::InsertComponent(comp_type) => {
+                        app.push_undo();
+                        let mut snap_x = mx_mm;
+                        let mut snap_y = my_mm;
+                        if app.snap_to_grid {
+                            snap_x = (snap_x / app.grid_size_mm).round() * app.grid_size_mm;
+                            snap_y = (snap_y / app.grid_size_mm).round() * app.grid_size_mm;
+                        }
+
+                        let mut comp = Component::default();
+                        comp.comp_type = comp_type;
+                        comp.rect = RectMm::new(snap_x, snap_y, 40.0, 10.0);
+                        comp.name = format!("{}_{}", comp_type.display_name(), app.current_page().components.len() + 1);
+
+                        for band in &app.current_page().bands {
+                            if snap_y >= band.top && snap_y <= (band.top + band.height) {
+                                comp.parent_band_id = Some(band.id.clone());
+                                break;
+                            }
+                        }
+
+                        let new_id = comp.id.clone();
+                        app.current_page_mut().components.push(comp);
+                        app.selected_component_id = Some(new_id);
+                        app.selected_band_id = None;
+                        app.active_tool = ActiveTool::Pointer;
+                        app.status_message = format!("Created {} component.", comp_type.display_name());
+                        app.refresh_code_buffer();
+                        return;
+                    }
+                    ActiveTool::InsertBand(band_type) => {
+                        app.push_undo();
+                        let mut snap_y = my_mm;
+                        if app.snap_to_grid {
+                            snap_y = (snap_y / app.grid_size_mm).round() * app.grid_size_mm;
+                        }
+
+                        let band = Band {
+                            id: Uuid::new_v4().to_string(),
+                            name: format!("{}_{}", band_type.display_name().replace(' ', ""), app.current_page().bands.len() + 1),
+                            band_type,
+                            top: snap_y,
+                            height: 15.0,
+                            data_source: None,
+                        };
+
+                        let new_id = band.id.clone();
+                        app.current_page_mut().bands.push(band);
+                        app.selected_band_id = Some(new_id);
+                        app.selected_component_id = None;
+                        app.active_tool = ActiveTool::Pointer;
+                        app.status_message = format!("Added {} band.", band_type.display_name());
+                        app.refresh_code_buffer();
+                        return;
+                    }
+                    ActiveTool::Pointer => {
+                        let mut clicked_comp_id = None;
+                        for comp in app.current_page().components.iter().rev() {
+                            if comp.rect.contains(mx_mm, my_mm) {
+                                clicked_comp_id = Some(comp.id.clone());
+                                break;
+                            }
+                        }
+
+                        if let Some(c_id) = clicked_comp_id {
+                            app.selected_component_id = Some(c_id);
+                            app.selected_band_id = None;
+                        } else {
+                            let mut clicked_band_id = None;
+                            for band in &app.current_page().bands {
+                                if my_mm >= (band.top - 5.0) && my_mm <= (band.top + band.height) {
+                                    clicked_band_id = Some(band.id.clone());
+                                    break;
+                                }
+                            }
+
+                            if let Some(b_id) = clicked_band_id {
+                                app.selected_band_id = Some(b_id);
+                                app.selected_component_id = None;
+                            } else {
+                                app.selected_component_id = None;
+                                app.selected_band_id = None;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Dragging & Resizing Interactions
+        if response.drag_started() {
+            if let Some((mx_mm, my_mm)) = mouse_mm {
+                if let Some(comp) = app.selected_component() {
+                    let c_rect = comp.rect;
+                    let handle_hit_radius = 4.0;
+
+                    let handles = [
+                        (ResizeHandle::TopLeft, c_rect.x, c_rect.y),
+                        (ResizeHandle::Top, c_rect.x + c_rect.w * 0.5, c_rect.y),
+                        (ResizeHandle::TopRight, c_rect.x + c_rect.w, c_rect.y),
+                        (ResizeHandle::Right, c_rect.x + c_rect.w, c_rect.y + c_rect.h * 0.5),
+                        (ResizeHandle::BottomRight, c_rect.x + c_rect.w, c_rect.y + c_rect.h),
+                        (ResizeHandle::Bottom, c_rect.x + c_rect.w * 0.5, c_rect.y + c_rect.h),
+                        (ResizeHandle::BottomLeft, c_rect.x, c_rect.y + c_rect.h),
+                        (ResizeHandle::Left, c_rect.x, c_rect.y + c_rect.h * 0.5),
+                    ];
+
+                    let mut hit_handle = None;
+                    for (h, hx, hy) in handles {
+                        let dist = ((mx_mm - hx).powi(2) + (my_mm - hy).powi(2)).sqrt();
+                        if dist <= handle_hit_radius {
+                            hit_handle = Some(h);
+                            break;
+                        }
+                    }
+
+                    if let Some(h) = hit_handle {
+                        let comp_id = comp.id.clone();
+                        app.push_undo();
+                        app.drag_state = DragState::Resizing {
+                            comp_id,
+                            handle: h,
+                            initial_rect: c_rect,
+                            mouse_start_mm: (mx_mm, my_mm),
+                        };
+                        return;
+                    }
+                }
+
+                let mut found_comp = None;
+                for comp in app.current_page().components.iter().rev() {
+                    if comp.rect.contains(mx_mm, my_mm) {
+                        found_comp = Some((comp.id.clone(), comp.rect));
+                        break;
+                    }
+                }
+
+                if let Some((c_id, initial_rect)) = found_comp {
+                    app.push_undo();
+                    app.selected_component_id = Some(c_id.clone());
+                    app.selected_band_id = None;
+                    app.drag_state = DragState::Moving {
+                        comp_id: c_id,
+                        initial_rect,
+                        mouse_start_mm: (mx_mm, my_mm),
+                    };
+                    return;
+                }
+
+                let mut hit_band_resize = None;
+                for band in &app.current_page().bands {
+                    let bottom_y = band.top + band.height;
+                    if (my_mm - bottom_y).abs() <= 3.0 {
+                        hit_band_resize = Some((band.id.clone(), band.height));
+                        break;
+                    }
+                }
+
+                if let Some((b_id, b_height)) = hit_band_resize {
+                    app.push_undo();
+                    app.drag_state = DragState::ResizingBand {
+                        band_id: b_id,
+                        initial_height: b_height,
+                        mouse_start_y_mm: my_mm,
+                    };
+                    return;
+                }
+            }
+        }
+
+        if response.dragged() {
+            if let Some((mx_mm, my_mm)) = mouse_mm {
+                match app.drag_state.clone() {
+                    DragState::Moving { comp_id, initial_rect, mouse_start_mm } => {
+                        let dx = mx_mm - mouse_start_mm.0;
+                        let dy = my_mm - mouse_start_mm.1;
+                        let mut new_x = initial_rect.x + dx;
+                        let mut new_y = initial_rect.y + dy;
+
+                        if app.snap_to_grid {
+                            new_x = (new_x / app.grid_size_mm).round() * app.grid_size_mm;
+                            new_y = (new_y / app.grid_size_mm).round() * app.grid_size_mm;
+                        }
+
+                        if let Some(comp) = app.current_page_mut().components.iter_mut().find(|c| c.id == comp_id) {
+                            comp.rect.x = new_x.max(0.0);
+                            comp.rect.y = new_y.max(0.0);
+                        }
+                    }
+                    DragState::Resizing { comp_id, handle, initial_rect, mouse_start_mm } => {
+                        let dx = mx_mm - mouse_start_mm.0;
+                        let dy = my_mm - mouse_start_mm.1;
+
+                        let mut r = initial_rect;
+                        match handle {
+                            ResizeHandle::TopLeft => {
+                                r.x += dx; r.w -= dx;
+                                r.y += dy; r.h -= dy;
+                            }
+                            ResizeHandle::Top => {
+                                r.y += dy; r.h -= dy;
+                            }
+                            ResizeHandle::TopRight => {
+                                r.w += dx;
+                                r.y += dy; r.h -= dy;
+                            }
+                            ResizeHandle::Right => {
+                                r.w += dx;
+                            }
+                            ResizeHandle::BottomRight => {
+                                r.w += dx;
+                                r.h += dy;
+                            }
+                            ResizeHandle::Bottom => {
+                                r.h += dy;
+                            }
+                            ResizeHandle::BottomLeft => {
+                                r.x += dx; r.w -= dx;
+                                r.h += dy;
+                            }
+                            ResizeHandle::Left => {
+                                r.x += dx; r.w -= dx;
+                            }
+                        }
+
+                        if app.snap_to_grid {
+                            r.x = (r.x / app.grid_size_mm).round() * app.grid_size_mm;
+                            r.y = (r.y / app.grid_size_mm).round() * app.grid_size_mm;
+                            r.w = (r.w / app.grid_size_mm).round() * app.grid_size_mm;
+                            r.h = (r.h / app.grid_size_mm).round() * app.grid_size_mm;
+                        }
+
+                        if let Some(comp) = app.current_page_mut().components.iter_mut().find(|c| c.id == comp_id) {
+                            comp.rect.x = r.x;
+                            comp.rect.y = r.y;
+                            comp.rect.w = r.w.max(2.0);
+                            comp.rect.h = r.h.max(2.0);
+                        }
+                    }
+                    DragState::ResizingBand { band_id, initial_height, mouse_start_y_mm } => {
+                        let dy = my_mm - mouse_start_y_mm;
+                        let mut new_h = (initial_height + dy).max(5.0);
+                        if app.snap_to_grid {
+                            new_h = (new_h / app.grid_size_mm).round() * app.grid_size_mm;
+                        }
+                        if let Some(band) = app.current_page_mut().bands.iter_mut().find(|b| b.id == band_id) {
+                            band.height = new_h;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if response.drag_stopped() {
+            app.drag_state = DragState::None;
+            app.refresh_code_buffer();
+        }
+    }
+}
