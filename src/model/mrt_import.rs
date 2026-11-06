@@ -592,15 +592,19 @@ fn parse_component(cv: &Value, unit: f32) -> Option<Component> {
     if let Some(c) = cv.get("Brush").and_then(|x| x.as_str()).and_then(parse_brush) {
         comp.bg_color = c;
     }
-    if let Some(c) = cv.get("TextBrush").and_then(|x| x.as_str()).and_then(parse_color) {
+    // Stored as "solid:R,G,B,A" in JSON (or a colour name / [A:R:G:B] in XML). The prefix must go first.
+    if let Some(c) = cv
+        .get("TextBrush")
+        .and_then(|x| x.as_str())
+        .and_then(|s| parse_color(s.trim().strip_prefix("solid:").unwrap_or(s.trim())))
+    {
         comp.text_color = c;
     }
     if let Some(b) = cv.get("Border").and_then(|x| x.as_str()) {
         apply_border(&mut comp, b);
     }
-    if let Some(ww) = cv.get("WordWrap").and_then(|x| x.as_bool()) {
-        comp.word_wrap = ww;
-    }
+    // Stimulsoft's default for WordWrap is off; files only store it when it is on.
+    comp.word_wrap = flag_of(cv, "WordWrap");
     if let Some(checked) = cv.get("Checked").and_then(|x| x.as_bool()) {
         comp.checked = checked;
     }

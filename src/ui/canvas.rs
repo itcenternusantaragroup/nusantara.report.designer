@@ -273,7 +273,7 @@ impl CanvasView {
                 let sel_color = theme::ACCENT;
                 painter.rect_stroke(c_rect, 0.0, Stroke::new(1.5_f32, sel_color));
 
-                let handle_size = 6.0;
+                let handle_size = 8.0;
                 let handles = [
                     c_rect.left_top(),
                     c_rect.center_top(),
@@ -359,6 +359,21 @@ impl CanvasView {
         page_rect: Rect,
         mm_to_px: f32,
     ) {
+        // Cursor feedback: resize arrows over a selected component's handles, move over a body.
+        if let Some(hover) = response.hover_pos() {
+            let over_handle = app
+                .selected_component()
+                .and_then(|c| handle_at(hover, c.rect, page_rect, mm_to_px).map(|h| handle_cursor(h)));
+            let icon = over_handle.or_else(|| {
+                let hover_mm = ((hover.x - page_rect.min.x) / mm_to_px, (hover.y - page_rect.min.y) / mm_to_px);
+                let inside = app.current_page().components.iter().any(|c| c.rect.contains(hover_mm.0, hover_mm.1));
+                inside.then_some(egui::CursorIcon::Move)
+            });
+            if let Some(icon) = icon {
+                response.ctx.set_cursor_icon(icon);
+            }
+        }
+
         let mouse_pos = response.interact_pointer_pos();
 
         let mouse_mm = mouse_pos.map(|p| {
@@ -462,33 +477,18 @@ impl CanvasView {
         }
 
         // 2. Dragging & Resizing Interactions
+        // Handles are checked in screen pixels, so they are the same size at every zoom and only
+        // a press right on a handle starts a resize. A press anywhere else inside a component moves it.
         if response.drag_started() {
-            if let Some((mx_mm, my_mm)) = mouse_mm {
+            // Start from where the button was pressed, not where the pointer was when egui
+            // recognised the drag (a few pixels later), so the handle stays under the pointer.
+            let press_origin = response.ctx.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos());
+            if let Some(press) = press_origin {
+                let mx_mm = (press.x - page_rect.min.x) / mm_to_px;
+                let my_mm = (press.y - page_rect.min.y) / mm_to_px;
                 if let Some(comp) = app.selected_component() {
                     let c_rect = comp.rect;
-                    let handle_hit_radius = 4.0;
-
-                    let handles = [
-                        (ResizeHandle::TopLeft, c_rect.x, c_rect.y),
-                        (ResizeHandle::Top, c_rect.x + c_rect.w * 0.5, c_rect.y),
-                        (ResizeHandle::TopRight, c_rect.x + c_rect.w, c_rect.y),
-                        (ResizeHandle::Right, c_rect.x + c_rect.w, c_rect.y + c_rect.h * 0.5),
-                        (ResizeHandle::BottomRight, c_rect.x + c_rect.w, c_rect.y + c_rect.h),
-                        (ResizeHandle::Bottom, c_rect.x + c_rect.w * 0.5, c_rect.y + c_rect.h),
-                        (ResizeHandle::BottomLeft, c_rect.x, c_rect.y + c_rect.h),
-                        (ResizeHandle::Left, c_rect.x, c_rect.y + c_rect.h * 0.5),
-                    ];
-
-                    let mut hit_handle = None;
-                    for (h, hx, hy) in handles {
-                        let dist = ((mx_mm - hx).powi(2) + (my_mm - hy).powi(2)).sqrt();
-                        if dist <= handle_hit_radius {
-                            hit_handle = Some(h);
-                            break;
-                        }
-                    }
-
-                    if let Some(h) = hit_handle {
+                    if let Some(h) = handle_at(press, c_rect, page_rect, mm_to_px) {
                         let comp_id = comp.id.clone();
                         app.push_undo();
                         app.drag_state = DragState::Resizing {
@@ -552,8 +552,8 @@ impl CanvasView {
                         let mut new_y = initial_rect.y + dy;
 
                         if app.snap_to_grid {
-                            new_x = (new_x / app.grid_size_mm).round() * app.grid_size_mm;
-                            new_y = (new_y / app.grid_size_mm).round() * app.grid_size_mm;
+                            new_x = magnetic(new_x, app.grid_size_mm);
+                            new_y = magnetic(new_y, app.grid_size_mm);
                         }
 
                         if let Some(comp) = app.current_page_mut().components.iter_mut().find(|c| c.id == comp_id) {
@@ -565,50 +565,63 @@ impl CanvasView {
                         let dx = mx_mm - mouse_start_mm.0;
                         let dy = my_mm - mouse_start_mm.1;
 
-                        let mut r = initial_rect;
-                        match handle {
-                            ResizeHandle::TopLeft => {
-                                r.x += dx; r.w -= dx;
-                                r.y += dy; r.h -= dy;
-                            }
-                            ResizeHandle::Top => {
-                                r.y += dy; r.h -= dy;
-                            }
-                            ResizeHandle::TopRight => {
-                                r.w += dx;
-                                r.y += dy; r.h -= dy;
-                            }
-                            ResizeHandle::Right => {
-                                r.w += dx;
-                            }
-                            ResizeHandle::BottomRight => {
-                                r.w += dx;
-                                r.h += dy;
-                            }
-                            ResizeHandle::Bottom => {
-                                r.h += dy;
-                            }
-                            ResizeHandle::BottomLeft => {
-                                r.x += dx; r.w -= dx;
-                                r.h += dy;
-                            }
-                            ResizeHandle::Left => {
-                                r.x += dx; r.w -= dx;
-                            }
+                        // Work on the four edges. Only the edges the handle controls move; the
+                        // opposite edges stay exactly where they were.
+                        let (mut left, mut top) = (initial_rect.x, initial_rect.y);
+                        let (mut right, mut bottom) = (initial_rect.x + initial_rect.w, initial_rect.y + initial_rect.h);
+                        let moves_left = matches!(handle, ResizeHandle::TopLeft | ResizeHandle::Left | ResizeHandle::BottomLeft);
+                        let moves_right = matches!(handle, ResizeHandle::TopRight | ResizeHandle::Right | ResizeHandle::BottomRight);
+                        let moves_top = matches!(handle, ResizeHandle::TopLeft | ResizeHandle::Top | ResizeHandle::TopRight);
+                        let moves_bottom = matches!(handle, ResizeHandle::BottomLeft | ResizeHandle::Bottom | ResizeHandle::BottomRight);
+
+                        if moves_left {
+                            left += dx;
+                        }
+                        if moves_right {
+                            right += dx;
+                        }
+                        if moves_top {
+                            top += dy;
+                        }
+                        if moves_bottom {
+                            bottom += dy;
                         }
 
                         if app.snap_to_grid {
-                            r.x = (r.x / app.grid_size_mm).round() * app.grid_size_mm;
-                            r.y = (r.y / app.grid_size_mm).round() * app.grid_size_mm;
-                            r.w = (r.w / app.grid_size_mm).round() * app.grid_size_mm;
-                            r.h = (r.h / app.grid_size_mm).round() * app.grid_size_mm;
+                            let g = app.grid_size_mm;
+                            if moves_left {
+                                left = magnetic(left, g);
+                            }
+                            if moves_right {
+                                right = magnetic(right, g);
+                            }
+                            if moves_top {
+                                top = magnetic(top, g);
+                            }
+                            if moves_bottom {
+                                bottom = magnetic(bottom, g);
+                            }
+                        }
+
+                        // Keep the moving edge on the far side of the fixed edge, and not off the page.
+                        if moves_left {
+                            left = left.min(right - MIN_SIZE_MM).max(0.0);
+                        }
+                        if moves_right {
+                            right = right.max(left + MIN_SIZE_MM);
+                        }
+                        if moves_top {
+                            top = top.min(bottom - MIN_SIZE_MM).max(0.0);
+                        }
+                        if moves_bottom {
+                            bottom = bottom.max(top + MIN_SIZE_MM);
                         }
 
                         if let Some(comp) = app.current_page_mut().components.iter_mut().find(|c| c.id == comp_id) {
-                            comp.rect.x = r.x;
-                            comp.rect.y = r.y;
-                            comp.rect.w = r.w.max(2.0);
-                            comp.rect.h = r.h.max(2.0);
+                            comp.rect.x = left;
+                            comp.rect.y = top;
+                            comp.rect.w = right - left;
+                            comp.rect.h = bottom - top;
                         }
                     }
                     DragState::ResizingBand { band_id, initial_height, mouse_start_y_mm } => {
@@ -631,4 +644,47 @@ impl CanvasView {
             app.refresh_code_buffer();
         }
     }
+}
+
+/// Radius, in screen pixels, around a resize handle that still counts as grabbing it.
+const HANDLE_RADIUS_PX: f32 = 7.0;
+
+/// The resize handle under `pos` for component rect `c`, if any. Tested in screen pixels.
+fn handle_at(pos: Pos2, c: RectMm, page_rect: Rect, mm_to_px: f32) -> Option<ResizeHandle> {
+    let to_px = |x: f32, y: f32| Pos2::new(page_rect.min.x + x * mm_to_px, page_rect.min.y + y * mm_to_px);
+    let (cx, cy) = (c.x + c.w * 0.5, c.y + c.h * 0.5);
+    let handles = [
+        (ResizeHandle::TopLeft, to_px(c.x, c.y)),
+        (ResizeHandle::Top, to_px(cx, c.y)),
+        (ResizeHandle::TopRight, to_px(c.x + c.w, c.y)),
+        (ResizeHandle::Right, to_px(c.x + c.w, cy)),
+        (ResizeHandle::BottomRight, to_px(c.x + c.w, c.y + c.h)),
+        (ResizeHandle::Bottom, to_px(cx, c.y + c.h)),
+        (ResizeHandle::BottomLeft, to_px(c.x, c.y + c.h)),
+        (ResizeHandle::Left, to_px(c.x, cy)),
+    ];
+    handles
+        .into_iter()
+        .find(|(_, p)| p.distance(pos) <= HANDLE_RADIUS_PX)
+        .map(|(h, _)| h)
+}
+
+/// Mouse cursor that matches the direction a handle resizes in.
+fn handle_cursor(h: ResizeHandle) -> egui::CursorIcon {
+    match h {
+        ResizeHandle::TopLeft | ResizeHandle::BottomRight => egui::CursorIcon::ResizeNwSe,
+        ResizeHandle::TopRight | ResizeHandle::BottomLeft => egui::CursorIcon::ResizeNeSw,
+        ResizeHandle::Top | ResizeHandle::Bottom => egui::CursorIcon::ResizeVertical,
+        ResizeHandle::Left | ResizeHandle::Right => egui::CursorIcon::ResizeHorizontal,
+    }
+}
+
+/// Smallest width or height a component can be resized to, in mm.
+const MIN_SIZE_MM: f32 = 2.0;
+
+/// Snaps `v` to the grid only when it is close to a grid line (within 30% of the grid step).
+/// Far from a line the value is kept as it is, so dragging stays smooth.
+fn magnetic(v: f32, grid: f32) -> f32 {
+    let nearest = (v / grid).round() * grid;
+    if (nearest - v).abs() <= grid * 0.3 { nearest } else { v }
 }

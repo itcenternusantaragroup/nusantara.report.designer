@@ -24,6 +24,9 @@ pub fn layout_job(comp: &Component, text: &str, px_per_pt: f32, wrap_width: Opti
         _ => Align::LEFT,
     };
 
+    // A trailing line break does not start a visible line (Stimulsoft ignores it). Keeping it
+    // would make a centred, single-line text sit higher than its neighbours.
+    let text = text.trim_end_matches(['\r', '\n']);
     let base_color = to_color(comp.text_color);
     for run in parse_runs(text, comp.allow_html_tags) {
         let format = run_format(comp, &run, base_color, px_per_pt);
@@ -79,8 +82,14 @@ pub fn draw(painter: &Painter, comp: &Component, text: &str, rect: Rect, px_per_
         _ => inner.top(),
     };
 
+    // Clip only horizontally: text taller than its box stays visible instead of being cut at the
+    // top and bottom (the report's header boxes are often shorter than their font).
+    let clip = Rect::from_min_max(
+        egui::pos2(rect.min.x, -1.0e6),
+        egui::pos2(rect.max.x, 1.0e6),
+    );
     painter
-        .with_clip_rect(rect)
+        .with_clip_rect(clip)
         .galley(egui::pos2(x, y), galley, to_color(comp.text_color));
 }
 

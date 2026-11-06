@@ -108,6 +108,10 @@ pub struct ReportDesignerApp {
     pub splash_started: Option<std::time::Instant>,
     /// Show the splash even in screenshot mode (for testing).
     pub splash_forced: bool,
+    /// Short pop-up message (text, time shown), for example after a save.
+    pub toast: Option<(String, std::time::Instant)>,
+    /// Window title last sent to the window, so it is only updated when it changes.
+    pub last_title: String,
     /// Scroll the preview to this sheet (testing: --preview-sheet N).
     pub preview_sheet: Option<usize>,
 }
@@ -165,7 +169,16 @@ impl ReportDesignerApp {
             splash_started: None,
             splash_forced: false,
             preview_sheet: None,
+            toast: None,
+            last_title: String::new(),
         }
+    }
+
+    /// Shows `msg` in the status bar and as a short pop-up.
+    pub fn notify(&mut self, msg: impl Into<String>) {
+        let msg = msg.into();
+        self.status_message = msg.clone();
+        self.toast = Some((msg, std::time::Instant::now()));
     }
 
     pub fn push_undo(&mut self) {
@@ -524,11 +537,11 @@ impl ReportDesignerApp {
                     self.current_page_idx = 0;
                     self.selected_component_id = None;
                     self.selected_band_id = None;
-                    self.status_message = format!("Loaded report from {}", path.display());
+                    self.notify(format!("Loaded {}", path.display()));
                     self.refresh_code_buffer();
                 }
                 Err(e) => {
-                    self.status_message = format!("Error loading file: {e}");
+                    self.notify(format!("Could not open the file: {e}"));
                 }
             }
         }
@@ -549,10 +562,10 @@ impl ReportDesignerApp {
             match MrtHandler::save_to_file(&self.report, &path) {
                 Ok(_) => {
                     self.report.file_path = Some(path.to_string_lossy().to_string());
-                    self.status_message = format!("Saved report to {}", path.display());
+                    self.notify(format!("Saved {}", path.display()));
                 }
                 Err(e) => {
-                    self.status_message = format!("Error saving file: {e}");
+                    self.notify(format!("Could not save: {e}"));
                 }
             }
         }
@@ -567,10 +580,10 @@ impl ReportDesignerApp {
             match MrtHandler::save_to_file(&self.report, &path) {
                 Ok(_) => {
                     self.report.file_path = Some(path.to_string_lossy().to_string());
-                    self.status_message = format!("Saved report to {}", path.display());
+                    self.notify(format!("Saved {}", path.display()));
                 }
                 Err(e) => {
-                    self.status_message = format!("Error saving file: {e}");
+                    self.notify(format!("Could not save: {e}"));
                 }
             }
         }
@@ -681,6 +694,25 @@ impl eframe::App for ReportDesignerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame_count += 1;
 
+        // Window title follows the open file: "... - [file name]".
+        let file_name = self
+            .report
+            .file_path
+            .as_deref()
+            .and_then(|p| std::path::Path::new(p).file_stem())
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Untitled".to_string());
+        let title = format!(
+            "Nusantara Report Designer {} (build {}) - [{}]",
+            env!("CARGO_PKG_VERSION"),
+            env!("APP_BUILD"),
+            file_name
+        );
+        if title != self.last_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.last_title = title;
+        }
+
         // Load the brand textures once, and show the splash on a normal start (not for screenshots).
         if !self.brand_checked {
             self.brand_checked = true;
@@ -781,6 +813,27 @@ impl eframe::App for ReportDesignerApp {
         // Dialogs
         NewReportDialog::show(self, ctx);
         PageSetupDialog::show(self, ctx);
+
+        // Toast: a short message in the bottom-right corner after an action.
+        if let Some((msg, at)) = self.toast.clone() {
+            if at.elapsed() < std::time::Duration::from_millis(2600) {
+                egui::Area::new(egui::Id::new("toast"))
+                    .order(egui::Order::Foreground)
+                    .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -40.0))
+                    .show(ctx, |ui| {
+                        egui::Frame::none()
+                            .fill(egui::Color32::from_rgb(0x32, 0x36, 0x3A))
+                            .rounding(8.0)
+                            .inner_margin(egui::Margin::symmetric(14.0, 9.0))
+                            .show(ui, |ui| {
+                                ui.label(egui::RichText::new(msg).color(egui::Color32::WHITE));
+                            });
+                    });
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            } else {
+                self.toast = None;
+            }
+        }
 
         // Splash on top of everything while it is visible.
         if let (Some(brand), Some(started)) = (&self.brand, self.splash_started) {
