@@ -622,6 +622,13 @@ mod demo_tests {
         }];
         ctab.crosstab = crate::model::crosstab::default_for(&app.report.dictionary);
         page.components.push(ctab);
+        let mut tcomp = Component { name: "DemoTable".into(), comp_type: ComponentType::Table, ..Component::default() };
+        let mut tspec = crate::model::TableSpec::default_for(&app.report.dictionary);
+        tspec.columns.iter_mut().for_each(|c| c.width = 45.0);
+        tspec.columns[0].footer = "Rows".into();
+        tcomp.rect = RectMm::new(20.0, 210.0, tspec.width(), 12.0);
+        tcomp.table = Some(tspec);
+        app.report.pages[0].components.push(tcomp);
         let bytes = sheets_to_pdf(&app).expect("export");
         std::fs::write(&out, bytes).expect("write");
     }

@@ -48,7 +48,72 @@ impl PropertiesPanel {
                 Some(c) => c,
                 None => return,
             };
-            if let Some(ct) = comp.crosstab.as_mut() {
+            if let Some(spec) = comp.table.as_mut() {
+                egui::CollapsingHeader::new("Table").id_salt("table_section").default_open(true).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Rows from:");
+                        let current = spec.source.clone().unwrap_or_else(|| "None (once)".to_string());
+                        egui::ComboBox::from_id_salt("table_source").selected_text(current).width(140.0).show_ui(ui, |ui| {
+                            if ui.selectable_label(spec.source.is_none(), "None (once)").clicked() {
+                                spec.source = None;
+                                changed = true;
+                            }
+                            for (name, _) in &ds_sources {
+                                if ui.selectable_label(spec.source.as_deref() == Some(name), name).clicked() {
+                                    spec.source = Some(name.clone());
+                                    changed = true;
+                                }
+                            }
+                        });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Row height:");
+                        changed |= ui.add(egui::DragValue::new(&mut spec.row_height).speed(0.5).range(3.0..=100.0).suffix(" mm")).changed();
+                        ui.label("Font:");
+                        changed |= ui.add(egui::DragValue::new(&mut spec.font_size).speed(0.5).range(4.0..=40.0).suffix(" pt")).changed();
+                    });
+                    let mut remove: Option<usize> = None;
+                    for (i, col) in spec.columns.iter_mut().enumerate() {
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Column {}", i + 1));
+                            changed |= ui.add(egui::DragValue::new(&mut col.width).speed(0.5).range(3.0..=300.0).suffix(" mm")).changed();
+                            if ui.small_button("X").on_hover_text("Remove column").clicked() {
+                                remove = Some(i);
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Header:");
+                            changed |= ui.add(egui::TextEdit::singleline(&mut col.header).desired_width(150.0)).changed();
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Body:");
+                            changed |= ui.add(egui::TextEdit::singleline(&mut col.body).hint_text("{source.column}").desired_width(150.0)).changed();
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Footer:");
+                            changed |= ui.add(egui::TextEdit::singleline(&mut col.footer).hint_text("optional").desired_width(150.0)).changed();
+                        });
+                    }
+                    if let Some(i) = remove {
+                        spec.columns.remove(i);
+                        changed = true;
+                    }
+                    if ui.button("Add column").clicked() {
+                        let n = spec.columns.len() + 1;
+                        spec.columns.push(crate::model::TableColumn {
+                            width: 30.0,
+                            header: format!("Column {n}"),
+                            body: String::new(),
+                            footer: String::new(),
+                        });
+                        changed = true;
+                    }
+                    ui.label(egui::RichText::new("Body and footer text can use expressions, e.g. {items.name}.").weak());
+                });
+                comp.rect.w = spec.width();
+                comp.rect.h = spec.row_height * 2.0;
+            }            if let Some(ct) = comp.crosstab.as_mut() {
                 egui::CollapsingHeader::new("Cross-tab").id_salt("crosstab_section").default_open(true).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Source:");

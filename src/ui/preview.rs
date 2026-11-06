@@ -232,7 +232,7 @@ fn paginate(app: &ReportDesignerApp, pi: usize, page: &Page) -> Vec<Sheet> {
     flow.new_sheet();
 
     // Components outside any band print once, on the first sheet of the page.
-    for c in page.components.iter().filter(|c| c.parent_band_id.is_none()) {
+    for c in page.components.iter().filter(|c| c.parent_band_id.is_none() && c.table.is_none()) {
         match &c.crosstab {
             // A cross-tab prints as its grid of cells.
             Some(ct) => {
@@ -244,15 +244,29 @@ fn paginate(app: &ReportDesignerApp, pi: usize, page: &Page) -> Vec<Sheet> {
         }
     }
 
-    let mut bands: Vec<&Band> = page.bands.iter().collect();
-    bands.sort_by(|a, b| a.top.partial_cmp(&b.top).unwrap_or(Ordering::Equal));
+    // Bands and page-level tables flow in the order of their top edge.
+    let mut order: Vec<(f32, Flowable)> = page.bands.iter().map(|b| (b.top, Flowable::Band(b))).collect();
+    order.extend(
+        page.components
+            .iter()
+            .filter(|c| c.parent_band_id.is_none() && c.table.is_some())
+            .map(|c| (c.rect.y, Flowable::Table(c))),
+    );
+    order.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
     let none = HashMap::new();
 
     // A group (GroupHeader with a valid condition) prints its data bands once per group.
     let group = group_plan(page, dict);
     let mut group_printed = false;
 
-    for band in bands {
+    for (_, item) in order {
+        let band = match item {
+            Flowable::Band(b) => b,
+            Flowable::Table(c) => {
+                flow_table(&mut flow, c, &app.report.dictionary);
+                continue;
+            }
+        };
         match band.band_type {
             // Detail bands print under their parent rows (see flow_details), not here.
             _ if band.detail_of.is_some() => {}
@@ -492,6 +506,109 @@ impl<'a> Flow<'a> {
     }
 }
 
+/// A page item in flow order: a band, or a table.
+enum Flowable<'a> {
+    Band(&'a Band),
+    Table(&'a Component),
+}
+
+/// What a table row is, for paging: a repeated header goes in front of body and footer rows
+/// that start a new sheet.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TableRow {
+    Header,
+    Body,
+    Footer,
+}
+
+/// Prints a table: the header, one body row per data row (or one body row), then the footer.
+fn flow_table(flow: &mut Flow, comp: &Component, dict: &Dictionary) {
+    let Some(spec) = comp.table.as_ref() else { return };
+    let empty = HashMap::new();
+    // Start where the table was placed, unless the flow is already further down the sheet.
+    if comp.rect.y > flow.y {
+        flow.y = comp.rect.y.min(flow.limit);
+    }
+
+    let header: Vec<String> = spec.columns.iter().map(|c| c.header.clone()).collect();
+    place_table_row(flow, comp, spec, &header, &empty, TableRow::Header);
+
+    let body: Vec<String> = spec.columns.iter().map(|c| c.body.clone()).collect();
+    match spec.source.as_deref() {
+        None => place_table_row(flow, comp, spec, &body, &empty, TableRow::Body),
+        Some(name) => {
+            if let Some(ds) = dict.data_sources.iter().find(|d| d.name == name) {
+                for i in 0..ds.rows.len() {
+                    let rows = HashMap::from([(ds.name.clone(), i)]);
+                    place_table_row(flow, comp, spec, &body, &rows, TableRow::Body);
+                }
+            }
+        }
+    }
+
+    if spec.columns.iter().any(|c| !c.footer.is_empty()) {
+        let footer: Vec<String> = spec.columns.iter().map(|c| c.footer.clone()).collect();
+        place_table_row(flow, comp, spec, &footer, &empty, TableRow::Footer);
+    }
+}
+
+/// Places one table row at the flow position, moving to a new sheet first when it does not fit.
+/// The header is repeated at the top of a new sheet, except before a header row.
+fn place_table_row(
+    flow: &mut Flow,
+    comp: &Component,
+    spec: &TableSpec,
+    texts: &[String],
+    rows: &HashMap<String, usize>,
+    kind: TableRow,
+) {
+    let row_h = spec.row_height.max(3.0);
+    if flow.body && flow.y + row_h > flow.limit {
+        flow.new_sheet();
+        if kind != TableRow::Header {
+            let header: Vec<String> = spec.columns.iter().map(|c| c.header.clone()).collect();
+            emit_table_row(flow, comp, spec, &header, &HashMap::new(), TableRow::Header);
+        }
+    }
+    emit_table_row(flow, comp, spec, texts, rows, kind);
+}
+
+/// Adds the cells of one row at the current flow position and moves down by the row height.
+fn emit_table_row(
+    flow: &mut Flow,
+    comp: &Component,
+    spec: &TableSpec,
+    texts: &[String],
+    rows: &HashMap<String, usize>,
+    kind: TableRow,
+) {
+    let row_h = spec.row_height.max(3.0);
+    let header = kind == TableRow::Header;
+    let mut x = comp.rect.x;
+    for (i, col) in spec.columns.iter().enumerate() {
+        let mut cell = Component::default();
+        cell.comp_type = ComponentType::Text;
+        cell.name = format!("{}_{}", comp.name, i);
+        cell.rect = RectMm::new(x, flow.y, col.width, row_h);
+        cell.text = texts.get(i).cloned().unwrap_or_default();
+        cell.font_size = spec.font_size;
+        cell.bold = header;
+        cell.word_wrap = true;
+        cell.align_h = if header { AlignH::Center } else { AlignH::Left };
+        cell.align_v = AlignV::Center;
+        cell.border_sides = BorderSides::all();
+        cell.border_color = [160, 160, 160, 255];
+        cell.border_width = 0.2;
+        cell.text_color = comp.text_color;
+        if header {
+            cell.bg_color = [238, 241, 246, 255];
+        }
+        flow.items.push(Item { comp: cell, rows: rows.clone() });
+        x += col.width;
+    }
+    flow.y += row_h;
+    flow.body = true;
+}
 /// The first data source named in the expressions of a band's components (`{Source.Column}`).
 fn inferred_source<'a>(page: &Page, band: &Band, dict: &'a Dictionary) -> Option<&'a DataSource> {
     for comp in page.components.iter().filter(|c| c.parent_band_id.as_deref() == Some(band.id.as_str())) {
@@ -1315,5 +1432,50 @@ mod crosstab_page_tests {
         let text = serde_json::to_string(&json).expect("text");
         let loaded = MrtHandler::from_mrt_content(&text).expect("load");
         assert_eq!(loaded.pages[0].components[0].crosstab, Some(ct()));
+    }
+}
+#[cfg(test)]
+mod table_tests {
+    use super::*;
+    use crate::model::{Column, DataSource, Report, TableColumn, TableSpec};
+
+    #[test]
+    fn table_rows_repeat_the_header_on_a_new_sheet() {
+        let mut app = ReportDesignerApp::new(None, None);
+        app.report = Report::blank();
+        app.report.dictionary.data_sources = vec![DataSource {
+            name: "items".into(),
+            alias: "items".into(),
+            columns: vec![Column { name: "name".into(), data_type: "System.String".into() }],
+            rows: (1..=6).map(|i| HashMap::from([("name".to_string(), format!("r{i}"))])).collect(),
+        }];
+        // Tall rows: three body rows fit under the header on an A4 sheet.
+        let spec = TableSpec {
+            source: Some("items".into()),
+            columns: vec![TableColumn { width: 60.0, header: "Name".into(), body: "{items.name}".into(), footer: String::new() }],
+            row_height: 60.0,
+            font_size: 9.0,
+        };
+        let comp = Component { name: "T".into(), rect: RectMm::new(10.0, 10.0, 60.0, 10.0), table: Some(spec), ..Component::default() };
+        app.report.pages[0].components.push(comp);
+
+        let sheets = build_sheets(&app);
+        assert_eq!(sheets.len(), 2, "six rows of 60 mm need two sheets");
+        assert_eq!(sheets[1].items[0].comp.text, "Name", "the header starts the second sheet");
+        let body: Vec<&Item> = sheets.iter().flat_map(|s| s.items.iter()).filter(|i| i.rows.contains_key("items")).collect();
+        assert_eq!(body.len(), 6, "every data row prints once");
+        assert_eq!(body[5].rows["items"], 5);
+    }
+
+    #[test]
+    fn table_survives_save_and_load() {
+        let mut report = Report::blank();
+        let spec = TableSpec::default_for(&report.dictionary);
+        let comp = Component { name: "T".into(), comp_type: ComponentType::Table, table: Some(spec.clone()), ..Component::default() };
+        report.pages[0].components.push(comp);
+        let json = crate::model::MrtHandler::to_stimulsoft_json(&report).expect("serialise");
+        let text = serde_json::to_string(&json).expect("text");
+        let loaded = crate::model::MrtHandler::from_mrt_content(&text).expect("load");
+        assert_eq!(loaded.pages[0].components[0].table, Some(spec));
     }
 }

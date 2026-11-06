@@ -178,6 +178,21 @@ impl RibbonBar {
                         ui.label(theme::caption("Bands"));
                         Self::band_items(app, ui);
                         ui.separator();
+                        if ui.button("Table").on_hover_text("Table with a header, body rows from a data source and a footer").clicked() {
+                            app.push_undo();
+                            let spec = crate::model::TableSpec::default_for(&app.report.dictionary);
+                            let mut c = Component::default();
+                            c.name = format!("Table_{}", app.current_page().components.len() + 1);
+                            c.comp_type = ComponentType::Table;
+                            c.rect = RectMm::new(20.0, 60.0, spec.width(), spec.row_height * 2.0);
+                            c.table = Some(spec);
+                            let id = c.id.clone();
+                            app.current_page_mut().components.push(c);
+                            app.selected_component_id = Some(id);
+                            app.selected_band_id = None;
+                            app.refresh_code_buffer();
+                            ui.close_menu();
+                        }
                         if ui.button("Cross-tab").on_hover_text("Pivot table built from a data source").clicked() {
                             match crate::model::crosstab::default_for(&app.report.dictionary) {
                                 Some(ct) => {

@@ -278,7 +278,23 @@ impl CanvasView {
                 }
                 ComponentType::Table => {
                     painter.rect_stroke(c_rect, 0.0, Stroke::new(1.0_f32, Color32::BLACK));
-                    painter.text(c_rect.center(), egui::Align2::CENTER_CENTER, "Table Grid", egui::FontId::proportional(11.0 * zoom), Color32::GRAY);
+                    match &comp.table {
+                        // A native table: its columns and header row, as it will print.
+                        Some(spec) => {
+                            let mut x = c_rect.min.x;
+                            let row_h = (spec.row_height * mm_to_px).max(10.0);
+                            for col in &spec.columns {
+                                let w = col.width * mm_to_px;
+                                let cell = Rect::from_min_size(Pos2::new(x, c_rect.min.y), Vec2::new(w, row_h));
+                                painter.rect_stroke(cell, 0.0, Stroke::new(0.5_f32, Color32::GRAY));
+                                painter.text(cell.center(), egui::Align2::CENTER_CENTER, &col.header, egui::FontId::proportional(9.0 * zoom), Color32::BLACK);
+                                x += w;
+                            }
+                        }
+                        None => {
+                            painter.text(c_rect.center(), egui::Align2::CENTER_CENTER, "Table Grid", egui::FontId::proportional(11.0 * zoom), Color32::GRAY);
+                        }
+                    }
                 }
             }
 
