@@ -36,6 +36,9 @@ impl PropertiesPanel {
         let comp_id = app.selected_component_id.clone().unwrap();
         let (mut changed, mut new_bind_expr) = (false, None);
 
+        let ds_sources: Vec<(String, Vec<String>)> = app.report.dictionary.data_sources.iter()
+            .map(|ds| (ds.name.clone(), ds.columns.iter().map(|c| c.name.clone()).collect()))
+            .collect();
         let ds_columns: Vec<(String, String)> = app.report.dictionary.data_sources.iter()
             .flat_map(|ds| ds.columns.iter().map(move |col| (ds.name.clone(), col.name.clone())))
             .collect();
@@ -45,6 +48,58 @@ impl PropertiesPanel {
                 Some(c) => c,
                 None => return,
             };
+            if let Some(ct) = comp.crosstab.as_mut() {
+                egui::CollapsingHeader::new("Cross-tab").id_salt("crosstab_section").default_open(true).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Source:");
+                        egui::ComboBox::from_id_salt("ct_source").selected_text(ct.source.clone()).width(140.0).show_ui(ui, |ui| {
+                            for (name, cols) in &ds_sources {
+                                if ui.selectable_label(ct.source == *name, name).clicked() {
+                                    ct.source = name.clone();
+                                    ct.row_column = cols.first().cloned().unwrap_or_default();
+                                    ct.column_column = cols.get(1).cloned().unwrap_or_default();
+                                    ct.value_column = cols.get(2).cloned().unwrap_or_default();
+                                    changed = true;
+                                }
+                            }
+                        });
+                    });
+                    let cols = ds_sources.iter().find(|(s, _)| *s == ct.source).map(|(_, c)| c.clone()).unwrap_or_default();
+                    for (field, label) in [(0usize, "Rows:"), (1, "Columns:"), (2, "Values:")] {
+                        ui.horizontal(|ui| {
+                            ui.label(label);
+                            let slot: &mut String = match field {
+                                0 => &mut ct.row_column,
+                                1 => &mut ct.column_column,
+                                _ => &mut ct.value_column,
+                            };
+                            egui::ComboBox::from_id_salt(("ct_field", field)).selected_text(slot.clone()).width(140.0).show_ui(ui, |ui| {
+                                for c in &cols {
+                                    if ui.selectable_value(slot, c.clone(), c.as_str()).changed() {
+                                        changed = true;
+                                    }
+                                }
+                            });
+                        });
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Cells:");
+                        let current = match ct.aggregate {
+                            CrossAgg::Sum => "Sum",
+                            CrossAgg::Count => "Count",
+                            CrossAgg::Average => "Average",
+                        };
+                        egui::ComboBox::from_id_salt("ct_agg").selected_text(current).width(140.0).show_ui(ui, |ui| {
+                            for (agg, label) in [(CrossAgg::Sum, "Sum"), (CrossAgg::Count, "Count"), (CrossAgg::Average, "Average")] {
+                                if ui.selectable_value(&mut ct.aggregate, agg, label).changed() {
+                                    changed = true;
+                                }
+                            }
+                        });
+                    });
+                    ui.label(egui::RichText::new("Built from the data when the page is printed.").weak());
+                });
+            }
 
             ui.label(egui::RichText::new(format!("Component: {} ({})", comp.name, comp.comp_type.display_name())).strong());
             ui.label(egui::RichText::new(format!("MRT Ident: {}", comp.comp_type.sti_ident())).size(11.0).color(Color32::GRAY));

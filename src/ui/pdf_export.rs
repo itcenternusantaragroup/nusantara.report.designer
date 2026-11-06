@@ -608,6 +608,20 @@ mod demo_tests {
         rich.text = "<h2>Judul <s>lama</s> <mark>baru</mark></h2><p align=\"center\">Rata tengah</p><ul><li>Pertama <b>tebal</b></li><li>Kedua</li></ul><ol><li><font color=\"#D93025\">Merah</font></li></ol><div style=\"text-align:right\">Rata kanan</div>".into();
         rich.font_size = 11.0;
         page.components.push(rich);
+        let mut ctab = Component::default();
+        ctab.rect = RectMm::new(20.0, 150.0, 150.0, 48.0);
+        let row = |r: &str, m: &str, a: &str| {
+            [("region", r), ("month", m), ("amount", a)].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<std::collections::HashMap<String, String>>()
+        };
+        let col = |n: &str| crate::model::Column { name: n.into(), data_type: "System.String".into() };
+        app.report.dictionary.data_sources = vec![crate::model::DataSource {
+            name: "sales".into(),
+            alias: "sales".into(),
+            columns: vec![col("region"), col("month"), col("amount")],
+            rows: vec![row("North", "Jan", "1200"), row("North", "Feb", "800"), row("South", "Jan", "450"), row("South", "Mar", "990")],
+        }];
+        ctab.crosstab = crate::model::crosstab::default_for(&app.report.dictionary);
+        page.components.push(ctab);
         let bytes = sheets_to_pdf(&app).expect("export");
         std::fs::write(&out, bytes).expect("write");
     }

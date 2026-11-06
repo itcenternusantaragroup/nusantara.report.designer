@@ -250,6 +250,28 @@ pub struct Component {
     /// Conditional formatting: the first rule whose test passes sets the colours.
     #[serde(default)]
     pub conditions: Vec<CondRule>,
+    /// A cross-tab (pivot) component: the grid is built from the data when the page is printed.
+    #[serde(default)]
+    pub crosstab: Option<CrossTab>,
+}
+
+/// How the cells of a cross-tab are computed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CrossAgg {
+    Sum,
+    Count,
+    Average,
+}
+
+/// Cross-tab settings: rows from `row_column`, columns from `column_column`, values from
+/// `value_column`, all of `source`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CrossTab {
+    pub source: String,
+    pub row_column: String,
+    pub column_column: String,
+    pub value_column: String,
+    pub aggregate: CrossAgg,
 }
 
 impl Default for Component {
@@ -280,6 +302,7 @@ impl Default for Component {
             image_data: None,
             parent_band_id: None,
             conditions: Vec::new(),
+            crosstab: None,
         }
     }
 }
@@ -540,6 +563,7 @@ impl Default for Report {
             image_data: None,
             parent_band_id: Some("band_report_title".to_string()),
             conditions: Vec::new(),
+            crosstab: None,
         };
 
         let comp_subtitle = Component {
@@ -568,6 +592,7 @@ impl Default for Report {
             image_data: None,
             parent_band_id: Some("band_report_title".to_string()),
             conditions: Vec::new(),
+            crosstab: None,
         };
 
         // 2. Header Band (Table Column Headers)
@@ -609,6 +634,7 @@ impl Default for Report {
             image_data: None,
             parent_band_id: Some("band_header".to_string()),
             conditions: Vec::new(),
+            crosstab: None,
         };
 
         let h_customer = Component {
@@ -637,6 +663,7 @@ impl Default for Report {
             image_data: None,
             parent_band_id: Some("band_header".to_string()),
             conditions: Vec::new(),
+            crosstab: None,
         };
 
         let h_product = Component {
@@ -665,6 +692,7 @@ impl Default for Report {
             image_data: None,
             parent_band_id: Some("band_header".to_string()),
             conditions: Vec::new(),
+            crosstab: None,
         };
 
         let h_qty = Component {
@@ -693,6 +721,7 @@ impl Default for Report {
             image_data: None,
             parent_band_id: Some("band_header".to_string()),
             conditions: Vec::new(),
+            crosstab: None,
         };
 
         let h_price = Component {
@@ -721,6 +750,7 @@ impl Default for Report {
             image_data: None,
             parent_band_id: Some("band_header".to_string()),
             conditions: Vec::new(),
+            crosstab: None,
         };
 
         let h_total = Component {
@@ -749,6 +779,7 @@ impl Default for Report {
             image_data: None,
             parent_band_id: Some("band_header".to_string()),
             conditions: Vec::new(),
+            crosstab: None,
         };
 
         // 3. Data Band (Row Template)
@@ -790,6 +821,7 @@ impl Default for Report {
             image_data: None,
             parent_band_id: Some("band_data".to_string()),
             conditions: Vec::new(),
+            crosstab: None,
         };
 
         let d_customer = Component {
@@ -818,6 +850,7 @@ impl Default for Report {
             image_data: None,
             parent_band_id: Some("band_data".to_string()),
             conditions: Vec::new(),
+            crosstab: None,
         };
 
         let d_product = Component {
@@ -846,6 +879,7 @@ impl Default for Report {
             image_data: None,
             parent_band_id: Some("band_data".to_string()),
             conditions: Vec::new(),
+            crosstab: None,
         };
 
         let d_qty = Component {
@@ -874,6 +908,7 @@ impl Default for Report {
             image_data: None,
             parent_band_id: Some("band_data".to_string()),
             conditions: Vec::new(),
+            crosstab: None,
         };
 
         let d_price = Component {
@@ -902,6 +937,7 @@ impl Default for Report {
             image_data: None,
             parent_band_id: Some("band_data".to_string()),
             conditions: Vec::new(),
+            crosstab: None,
         };
 
         let d_total = Component {
@@ -930,6 +966,7 @@ impl Default for Report {
             image_data: None,
             parent_band_id: Some("band_data".to_string()),
             conditions: Vec::new(),
+            crosstab: None,
         };
 
         // 4. Footer Band (Totals & Signature)
@@ -971,6 +1008,7 @@ impl Default for Report {
             image_data: None,
             parent_band_id: Some("band_footer".to_string()),
             conditions: Vec::new(),
+            crosstab: None,
         };
 
         let f_sum = Component {
@@ -999,6 +1037,7 @@ impl Default for Report {
             image_data: None,
             parent_band_id: Some("band_footer".to_string()),
             conditions: Vec::new(),
+            crosstab: None,
         };
 
         // 5. Page Footer Band
@@ -1040,6 +1079,7 @@ impl Default for Report {
             image_data: None,
             parent_band_id: Some("band_page_footer".to_string()),
             conditions: Vec::new(),
+            crosstab: None,
         };
 
         let pf_page_num = Component {
@@ -1068,6 +1108,7 @@ impl Default for Report {
             image_data: None,
             parent_band_id: Some("band_page_footer".to_string()),
             conditions: Vec::new(),
+            crosstab: None,
         };
 
         // Extra elements: Barcode for order tracking
@@ -1097,6 +1138,7 @@ impl Default for Report {
             image_data: None,
             parent_band_id: None,
             conditions: Vec::new(),
+            crosstab: None,
         };
 
         page.bands = vec![title_band, header_band, data_band, footer_band, page_footer_band];

@@ -233,7 +233,15 @@ fn paginate(app: &ReportDesignerApp, pi: usize, page: &Page) -> Vec<Sheet> {
 
     // Components outside any band print once, on the first sheet of the page.
     for c in page.components.iter().filter(|c| c.parent_band_id.is_none()) {
-        flow.items.push(Item { comp: c.clone(), rows: HashMap::new() });
+        match &c.crosstab {
+            // A cross-tab prints as its grid of cells.
+            Some(ct) => {
+                for cell in crate::model::crosstab::cells(c, ct, &app.report.dictionary) {
+                    flow.items.push(Item { comp: cell, rows: HashMap::new() });
+                }
+            }
+            None => flow.items.push(Item { comp: c.clone(), rows: HashMap::new() }),
+        }
     }
 
     let mut bands: Vec<&Band> = page.bands.iter().collect();
@@ -1248,5 +1256,64 @@ mod relation_file_tests {
         let loaded = MrtHandler::from_mrt_content(&text).expect("load");
         assert_eq!(loaded.dictionary.relations, report.dictionary.relations);
         assert_eq!(loaded.pages[0].bands[0].detail_of.as_deref(), Some("items"));
+    }
+}
+#[cfg(test)]
+mod crosstab_page_tests {
+    use super::*;
+    use crate::model::{Column, CrossAgg, CrossTab, DataSource, MrtHandler, Report};
+
+    fn row(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    fn ct() -> CrossTab {
+        CrossTab {
+            source: "sales".into(),
+            row_column: "region".into(),
+            column_column: "month".into(),
+            value_column: "amount".into(),
+            aggregate: CrossAgg::Sum,
+        }
+    }
+
+    fn report_with_crosstab() -> Report {
+        let mut report = Report::blank();
+        let col = |n: &str| Column { name: n.into(), data_type: "System.String".into() };
+        report.dictionary.data_sources = vec![DataSource {
+            name: "sales".into(),
+            alias: "sales".into(),
+            columns: vec![col("region"), col("month"), col("amount")],
+            rows: vec![
+                row(&[("region", "N"), ("month", "Jan"), ("amount", "10")]),
+                row(&[("region", "S"), ("month", "Feb"), ("amount", "4")]),
+            ],
+        }];
+        let mut comp = Component::default();
+        comp.rect = RectMm::new(10.0, 40.0, 120.0, 30.0);
+        comp.crosstab = Some(ct());
+        report.pages[0].components.push(comp);
+        report
+    }
+
+    #[test]
+    fn page_crosstab_prints_as_cells() {
+        let mut app = ReportDesignerApp::new(None, None);
+        app.report = report_with_crosstab();
+        let sheets = build_sheets(&app);
+        let items: Vec<&Item> = sheets.iter().flat_map(|s| s.items.iter()).collect();
+        // Rows N, S and a total row; columns Feb, Jan and a total column; the corner: 4 x 4 cells.
+        assert_eq!(items.len(), 16);
+        assert!(items.iter().any(|i| i.comp.text == "10,00"));
+        assert!(items.iter().all(|i| i.comp.crosstab.is_none()), "cells are plain text");
+    }
+
+    #[test]
+    fn crosstab_survives_save_and_load() {
+        let report = report_with_crosstab();
+        let json = MrtHandler::to_stimulsoft_json(&report).expect("serialise");
+        let text = serde_json::to_string(&json).expect("text");
+        let loaded = MrtHandler::from_mrt_content(&text).expect("load");
+        assert_eq!(loaded.pages[0].components[0].crosstab, Some(ct()));
     }
 }

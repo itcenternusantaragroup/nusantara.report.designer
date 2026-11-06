@@ -178,6 +178,25 @@ impl RibbonBar {
                         ui.label(theme::caption("Bands"));
                         Self::band_items(app, ui);
                         ui.separator();
+                        if ui.button("Cross-tab").on_hover_text("Pivot table built from a data source").clicked() {
+                            match crate::model::crosstab::default_for(&app.report.dictionary) {
+                                Some(ct) => {
+                                    app.push_undo();
+                                    let mut c = Component::default();
+                                    c.name = format!("CrossTab_{}", app.current_page().components.len() + 1);
+                                    c.rect = RectMm::new(20.0, 60.0, 150.0, 60.0);
+                                    c.text = "[Cross-tab]".into();
+                                    c.crosstab = Some(ct);
+                                    let id = c.id.clone();
+                                    app.current_page_mut().components.push(c);
+                                    app.selected_component_id = Some(id);
+                                    app.selected_band_id = None;
+                                    app.refresh_code_buffer();
+                                }
+                                None => app.status_message = "Load a data source first (Data tab).".to_string(),
+                            }
+                            ui.close_menu();
+                        }
                         if ui.button("New page").clicked() {
                             add_page(app);
                             ui.close_menu();
