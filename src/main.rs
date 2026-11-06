@@ -13,6 +13,7 @@ fn main() -> eframe::Result<()> {
     let mut start_preview = false;
     let mut start_about = false;
     let mut start_splash = false;
+    let mut preview_sheet: Option<usize> = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--screenshot" => screenshot_path = args.next(),
@@ -20,6 +21,10 @@ fn main() -> eframe::Result<()> {
             "--preview" => start_preview = true,
             "--about" => start_about = true,
             "--splash" => start_splash = true,
+            "--preview-sheet" => {
+                start_preview = true;
+                preview_sheet = args.next().and_then(|n| n.parse().ok());
+            }
             _ => {}
         }
     }
@@ -40,6 +45,7 @@ fn main() -> eframe::Result<()> {
             let mut app = ReportDesignerApp::new(screenshot_path, open_path);
             app.show_about = start_about;
             app.splash_forced = start_splash;
+            app.preview_sheet = preview_sheet;
             if start_preview {
                 app.app_mode = ui::designer::AppMode::Preview;
             }

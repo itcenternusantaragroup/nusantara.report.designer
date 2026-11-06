@@ -141,8 +141,13 @@ fn apply_style_attributes(attrs: &str, style: &mut Run) {
         match key.as_str() {
             "color" => style.color = parse_color(&value).or(style.color),
             "size" => {
-                if let Ok(n) = value.trim().parse::<u8>() {
-                    style.size_scale = html_size_scale(n);
+                // 1..7 are HTML size steps. Larger values (Stimulsoft writes e.g. size="12") are points.
+                if let Ok(n) = value.trim().parse::<f32>() {
+                    if (1.0..=7.0).contains(&n) {
+                        style.size_scale = html_size_scale(n as u8);
+                    } else if n > 7.0 {
+                        style.size_pt = Some(n);
+                    }
                 }
             }
             "style" => {
@@ -265,7 +270,7 @@ mod tests {
 
     #[test]
     fn bold_and_font_tags() {
-        let runs = parse_runs("a<b>B</b>c<font size=\"12\" color=\"#ff0000\">d</font>", true);
+        let runs = parse_runs("a<b>B</b>c<font size=\"5\" color=\"#ff0000\">d</font>", true);
         assert_eq!(runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), vec!["a", "B", "c", "d"]);
         assert!(runs[1].bold && !runs[2].bold);
         assert_eq!(runs[3].color, Some([255, 0, 0, 255]));
@@ -280,6 +285,17 @@ mod tests {
     #[test]
     fn flag_off_keeps_markup() {
         assert_eq!(parse_runs("<b>x</b>", false)[0].text, "<b>x</b>");
+    }
+
+    #[test]
+    fn font_size_attribute_is_points_above_seven() {
+        let big = parse_runs("<font size=\"12\">a</font>", true);
+        assert_eq!(big[0].size_pt, Some(12.0));
+        assert_eq!(big[0].size_scale, 1.0);
+
+        let step = parse_runs("<font size=\"3\">b</font>", true);
+        assert_eq!(step[0].size_pt, None);
+        assert_eq!(step[0].size_scale, 1.0);
     }
 
     #[test]

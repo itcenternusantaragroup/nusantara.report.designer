@@ -560,7 +560,10 @@ fn parse_component(cv: &Value, unit: f32) -> Option<Component> {
     };
     comp.rect = parse_rect(cv.get("ClientRectangle"), unit);
 
-    if !is_panel {
+    if is_panel {
+        // A panel is only a box: clear the default text so it does not show "Text Label".
+        comp.text = String::new();
+    } else {
         comp.text = match cv.get("Text") {
             Some(Value::String(s)) => s.clone(),
             Some(obj @ Value::Object(_)) => str_of(obj, "Value").to_string(),

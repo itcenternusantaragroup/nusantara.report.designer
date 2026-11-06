@@ -108,6 +108,8 @@ pub struct ReportDesignerApp {
     pub splash_started: Option<std::time::Instant>,
     /// Show the splash even in screenshot mode (for testing).
     pub splash_forced: bool,
+    /// Scroll the preview to this sheet (testing: --preview-sheet N).
+    pub preview_sheet: Option<usize>,
 }
 
 impl ReportDesignerApp {
@@ -162,6 +164,7 @@ impl ReportDesignerApp {
             brand_checked: false,
             splash_started: None,
             splash_forced: false,
+            preview_sheet: None,
         }
     }
 
@@ -593,6 +596,49 @@ impl ReportDesignerApp {
         }
     }
 
+    /// Arrow keys move the selected component (or band) in Design mode.
+    /// Plain arrows move 0.5 mm, Shift + arrow moves 5 mm. Ignored while a text field has focus.
+    fn nudge_selection(&mut self, ctx: &egui::Context) {
+        if self.app_mode != AppMode::Design || ctx.wants_keyboard_input() {
+            return;
+        }
+        let (dx, dy) = ctx.input(|i| {
+            let step = if i.modifiers.shift { 5.0_f32 } else { 0.5 };
+            let mut d = (0.0_f32, 0.0_f32);
+            if i.key_pressed(Key::ArrowLeft) {
+                d.0 -= step;
+            }
+            if i.key_pressed(Key::ArrowRight) {
+                d.0 += step;
+            }
+            if i.key_pressed(Key::ArrowUp) {
+                d.1 -= step;
+            }
+            if i.key_pressed(Key::ArrowDown) {
+                d.1 += step;
+            }
+            d
+        });
+        if dx == 0.0 && dy == 0.0 {
+            return;
+        }
+
+        if self.selected_component_id.is_some() {
+            self.push_undo();
+            if let Some(c) = self.selected_component_mut() {
+                c.rect.x = (c.rect.x + dx).max(0.0);
+                c.rect.y = (c.rect.y + dy).max(0.0);
+            }
+            self.refresh_code_buffer();
+        } else if self.selected_band_id.is_some() {
+            self.push_undo();
+            if let Some(b) = self.selected_band_mut() {
+                b.top = (b.top + dy).max(0.0);
+            }
+            self.refresh_code_buffer();
+        }
+    }
+
     fn handle_global_keyboard(&mut self, ctx: &egui::Context) {
         let (z_pressed, y_pressed, c_pressed, v_pressed, d_pressed, s_pressed, o_pressed, n_pressed, del_pressed) = ctx.input(|i| {
             let ctrl = i.modifiers.ctrl || i.modifiers.command;
@@ -676,6 +722,7 @@ impl eframe::App for ReportDesignerApp {
         }
 
         self.handle_global_keyboard(ctx);
+        self.nudge_selection(ctx);
 
         // 1. Top Ribbon / Menu Bar
         RibbonBar::show(self, ctx);

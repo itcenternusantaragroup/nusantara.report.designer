@@ -65,9 +65,11 @@ impl PreviewView {
         egui::CentralPanel::default()
             .frame(Frame::central_panel(&ctx.style()).fill(DESK))
             .show(ctx, |ui| {
-                egui::ScrollArea::both()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| Self::render(app, ui));
+                let mut area = egui::ScrollArea::both().auto_shrink([false, false]);
+                if let Some(n) = app.preview_sheet {
+                    area = area.vertical_scroll_offset(sheet_offset(app, n));
+                }
+                area.show(ui, |ui| Self::render(app, ui));
             });
     }
 
@@ -191,10 +193,12 @@ fn paginate(app: &ReportDesignerApp, pi: usize, page: &Page) -> Vec<Sheet> {
         match band.band_type {
             BandType::PageHeader | BandType::PageFooter => {}
             BandType::DataBand => {
+                // Use the band's own data source; if it has none, use the source its fields refer to.
                 let source = band
                     .data_source
                     .as_ref()
-                    .and_then(|name| dict.data_sources.iter().find(|d| &d.name == name));
+                    .and_then(|name| dict.data_sources.iter().find(|d| &d.name == name))
+                    .or_else(|| inferred_source(page, band, dict));
                 match source {
                     Some(ds) if !ds.rows.is_empty() => {
                         for i in 0..ds.rows.len() {
@@ -265,6 +269,24 @@ impl<'a> Flow<'a> {
     }
 }
 
+/// The first data source named in the expressions of a band's components (`{Source.Column}`).
+fn inferred_source<'a>(page: &Page, band: &Band, dict: &'a Dictionary) -> Option<&'a DataSource> {
+    for comp in page.components.iter().filter(|c| c.parent_band_id.as_deref() == Some(band.id.as_str())) {
+        let mut rest = comp.text.as_str();
+        while let Some(open) = rest.find('{') {
+            let Some(close) = rest[open..].find('}') else { break };
+            let token = rest[open + 1..open + close].trim();
+            if let Some((source, _)) = token.split_once('.') {
+                if let Some(ds) = dict.data_sources.iter().find(|d| d.name == source) {
+                    return Some(ds);
+                }
+            }
+            rest = &rest[open + close + 1..];
+        }
+    }
+    None
+}
+
 /// Copies the components of `band` into `items`, moved so the band starts at `y`.
 fn place_into(page: &Page, band: &Band, y: f32, rows: &HashMap<String, usize>, items: &mut Vec<Item>) {
     let dy = y - band.top;
@@ -273,6 +295,16 @@ fn place_into(page: &Page, band: &Band, y: f32, rows: &HashMap<String, usize>, i
         comp.rect.y += dy;
         items.push(Item { comp, rows: rows.clone() });
     }
+}
+
+/// Vertical position (screen pixels, from the top of the preview) where sheet `n` starts.
+fn sheet_offset(app: &ReportDesignerApp, n: usize) -> f32 {
+    let mm_px = 3.78 * app.zoom;
+    let mut y = SHEET_GAP;
+    for sheet in build_sheets(app).iter().take(n) {
+        y += page_size(app, sheet).1 * mm_px + SHEET_GAP;
+    }
+    y
 }
 
 fn page_size(app: &ReportDesignerApp, sheet: &Sheet) -> (f32, f32) {
@@ -569,4 +601,56 @@ fn plain_text(app: &ReportDesignerApp) -> String {
     txt.push_str(&rule);
     txt.push('\n');
     txt
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Prints every printed sheet of the report named by `NUSA_PREVIEW_FILE`, and every
+    /// expression that is still not evaluated. Skipped when the variable is not set.
+    #[test]
+    fn summarise_preview_sheets() {
+        let Ok(path) = std::env::var("NUSA_PREVIEW_FILE") else { return };
+        let app = ReportDesignerApp::new(None, Some(path));
+        let sheets = build_sheets(&app);
+        let vars = base_vars(&app);
+        println!("sheets={}", sheets.len());
+
+        let mut unresolved: Vec<String> = Vec::new();
+        for (n, sheet) in sheets.iter().enumerate() {
+            let (w, h) = page_size(&app, sheet);
+            let mut sheet_vars = vars.clone();
+            sheet_vars.insert("PageNumber".to_string(), (n + 1).to_string());
+            sheet_vars.insert("TotalPageCount".to_string(), sheets.len().to_string());
+            let texts = sheet.items.iter().filter(|i| i.comp.comp_type == ComponentType::Text).count();
+            println!(
+                "sheet {:>2}: page {} {:.0}x{:.0}mm items={} text={}",
+                n + 1,
+                sheet.page_idx + 1,
+                w,
+                h,
+                sheet.items.len(),
+                texts
+            );
+            for item in &sheet.items {
+                let eval = EvalContext {
+                    dictionary: &app.report.dictionary,
+                    row_index: &item.rows,
+                    vars: &sheet_vars,
+                };
+                let out = eval.evaluate(&item.comp.text);
+                if matches!(item.comp.comp_type, ComponentType::Text | ComponentType::Barcode | ComponentType::CheckBox)
+                    && out.contains('{')
+                {
+                    unresolved.push(format!("sheet {}: {}", n + 1, out.chars().take(140).collect::<String>()));
+                }
+            }
+        }
+
+        println!("unresolved expressions: {}", unresolved.len());
+        for line in unresolved.iter().take(40) {
+            println!("  {line}");
+        }
+    }
 }
