@@ -1,10 +1,32 @@
-//! Turns a Stimulsoft text value into styled runs.
+//! Turns a Stimulsoft text value into styled runs and paragraphs.
 //!
-//! When a component has "allow HTML tags" on, the text is read as a small HTML subset:
-//! b/strong, i/em, u, span/font (colour, size, style), br, p/div and sup/sub. Entities
-//! such as &nbsp; are decoded. With the flag off, the text is shown exactly as written.
+//! When a component has "allow HTML tags" on, the text is read as an HTML subset:
+//! - inline: b/strong, i/em, u, s/strike/del, mark, span/font (colour, size, face, style),
+//!   sup/sub, br;
+//! - blocks: p/div and h1..h6 (with `align` or `text-align`), ul/ol with li (bullets and numbers);
+//! - entities such as &nbsp; are decoded.
+//!
+//! With the flag off, the text is shown exactly as written.
 
 use super::mrt_import::named_color;
+use super::report::AlignH;
+
+/// The marker in front of a list item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bullet {
+    Dot,
+    Number(u32),
+}
+
+impl Bullet {
+    /// The text drawn in front of the item.
+    pub fn label(self) -> String {
+        match self {
+            Bullet::Dot => "\u{2022}  ".to_string(),
+            Bullet::Number(n) => format!("{n}. "),
+        }
+    }
+}
 
 /// One piece of text with a single style. `text` is empty for a bare style.
 #[derive(Debug, Clone, PartialEq)]
@@ -13,12 +35,21 @@ pub struct Run {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
+    pub strike: bool,
     /// Colour override (RGBA). `None` keeps the component colour.
     pub color: Option<[u8; 4]>,
+    /// Background highlight (RGBA).
+    pub highlight: Option<[u8; 4]>,
+    /// Font family name from the tag (`face`, `font-family`).
+    pub family: Option<String>,
     /// Size relative to the component font size.
     pub size_scale: f32,
     /// Absolute size in points (from CSS `font-size: 10pt`). Wins over `size_scale`.
     pub size_pt: Option<f32>,
+    /// Paragraph alignment of the block this run is in.
+    pub align: Option<AlignH>,
+    /// List marker of the item this run is in.
+    pub bullet: Option<Bullet>,
 }
 
 impl Run {
@@ -28,15 +59,34 @@ impl Run {
             bold: false,
             italic: false,
             underline: false,
+            strike: false,
             color: None,
+            highlight: None,
+            family: None,
             size_scale: 1.0,
             size_pt: None,
+            align: None,
+            bullet: None,
         }
     }
 }
 
-/// Parses `input` into runs. Adjacent runs with the same style are not merged; callers can
-/// render them one after another.
+impl Default for Run {
+    fn default() -> Self {
+        Run::plain("")
+    }
+}
+
+/// A paragraph: its styled runs (no line breaks inside), its alignment and its list marker.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Paragraph {
+    pub runs: Vec<Run>,
+    pub align: Option<AlignH>,
+    pub bullet: Option<Bullet>,
+}
+
+/// Parses `input` into runs. Adjacent runs with the same style are not merged; line breaks are
+/// kept as `\n` inside the runs.
 pub fn parse_runs(input: &str, allow_html: bool) -> Vec<Run> {
     if !allow_html {
         return vec![Run::plain(input)];
@@ -45,8 +95,10 @@ pub fn parse_runs(input: &str, allow_html: bool) -> Vec<Run> {
     let chars: Vec<char> = input.chars().collect();
     let mut runs: Vec<Run> = Vec::new();
     let mut style = Run::plain("");
-    // Each open formatting tag remembers the style it replaces, so its close tag can restore it.
+    // Each open tag remembers the style it replaces, so its close tag can restore it.
     let mut stack: Vec<(String, Run)> = Vec::new();
+    // Open lists: (ordered, items so far).
+    let mut lists: Vec<(bool, u32)> = Vec::new();
     let mut buf = String::new();
     let mut i = 0;
 
@@ -58,7 +110,7 @@ pub fn parse_runs(input: &str, allow_html: bool) -> Vec<Run> {
                 let tag: String = chars[i + 1..i + rel_end].iter().collect();
                 if looks_like_tag(&tag) {
                     flush(&mut buf, &style, &mut runs);
-                    apply_tag(tag.trim(), &mut buf, &mut style, &mut stack);
+                    apply_tag(tag.trim(), &mut buf, &runs, &mut style, &mut stack, &mut lists);
                     i += rel_end + 1;
                     continue;
                 }
@@ -83,6 +135,33 @@ pub fn parse_runs(input: &str, allow_html: bool) -> Vec<Run> {
     runs
 }
 
+/// The same text split into paragraphs. Empty paragraphs at the end are dropped.
+pub fn parse_paragraphs(input: &str, allow_html: bool) -> Vec<Paragraph> {
+    let mut out = vec![Paragraph { runs: Vec::new(), align: None, bullet: None }];
+    for run in parse_runs(input, allow_html) {
+        for (k, piece) in run.text.split('\n').enumerate() {
+            if k > 0 {
+                out.push(Paragraph { runs: Vec::new(), align: None, bullet: None });
+            }
+            if piece.is_empty() {
+                continue;
+            }
+            let para = out.last_mut().expect("at least one paragraph");
+            if para.runs.is_empty() {
+                para.align = run.align;
+                para.bullet = run.bullet;
+            }
+            let mut r = run.clone();
+            r.text = piece.to_string();
+            para.runs.push(r);
+        }
+    }
+    while out.len() > 1 && out.last().is_some_and(|p| p.runs.is_empty()) {
+        out.pop();
+    }
+    out
+}
+
 /// The text with all tags removed, as the designer shows it in a plain field.
 pub fn strip_tags(input: &str) -> String {
     parse_runs(input, true).into_iter().map(|r| r.text).collect()
@@ -101,7 +180,22 @@ fn looks_like_tag(tag: &str) -> bool {
     t.chars().next().map_or(false, |c| c.is_ascii_alphabetic())
 }
 
-fn apply_tag(tag: &str, buf: &mut String, style: &mut Run, stack: &mut Vec<(String, Run)>) {
+/// Starts a new paragraph unless the text so far already ends with a line break (or is empty).
+fn block_break(buf: &mut String, runs: &[Run]) {
+    let last = buf.chars().last().or_else(|| runs.last().and_then(|r| r.text.chars().last()));
+    if matches!(last, Some(c) if c != '\n') {
+        buf.push('\n');
+    }
+}
+
+fn apply_tag(
+    tag: &str,
+    buf: &mut String,
+    runs: &[Run],
+    style: &mut Run,
+    stack: &mut Vec<(String, Run)>,
+    lists: &mut Vec<(bool, u32)>,
+) {
     let closing = tag.starts_with('/');
     let body = tag.trim_start_matches('/').trim();
     let name = body.split(|c: char| c.is_whitespace() || c == '/').next().unwrap_or("").to_ascii_lowercase();
@@ -109,24 +203,57 @@ fn apply_tag(tag: &str, buf: &mut String, style: &mut Run, stack: &mut Vec<(Stri
 
     match name.as_str() {
         "br" => buf.push('\n'),
-        "p" | "div" => {
+        "ul" | "ol" => {
+            block_break(buf, runs);
             if closing {
-                buf.push('\n');
+                lists.pop();
+            } else {
+                lists.push((name == "ol", 0));
             }
         }
-        _ if closing => {
-            if let Some(pos) = stack.iter().rposition(|(n, _)| *n == name) {
-                let (_, saved) = stack[pos].clone();
-                stack.truncate(pos);
-                *style = saved;
+        "li" => {
+            block_break(buf, runs);
+            if closing {
+                restore(stack, style, "li");
+            } else {
+                stack.push(("li".to_string(), style.clone()));
+                let (ordered, n) = lists.last_mut().map(|l| {
+                    l.1 += 1;
+                    *l
+                }).unwrap_or((false, 1));
+                style.bullet = Some(if ordered { Bullet::Number(n) } else { Bullet::Dot });
             }
         }
-        "b" | "strong" | "i" | "em" | "u" | "span" | "font" | "sup" | "sub" => {
+        "p" | "div" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+            block_break(buf, runs);
+            if closing {
+                restore(stack, style, &name);
+            } else {
+                stack.push((name.clone(), style.clone()));
+                if let Some(a) = parse_align(attribute_value(attrs, "align").as_deref()) {
+                    style.align = Some(a);
+                }
+                apply_style_attributes(attrs, style);
+                match name.as_str() {
+                    "h1" => heading(style, 2.0),
+                    "h2" => heading(style, 1.5),
+                    "h3" => heading(style, 1.17),
+                    "h4" => heading(style, 1.0),
+                    "h5" => heading(style, 0.83),
+                    "h6" => heading(style, 0.67),
+                    _ => {}
+                }
+            }
+        }
+        _ if closing => restore(stack, style, &name),
+        "b" | "strong" | "i" | "em" | "u" | "s" | "strike" | "del" | "mark" | "span" | "font" | "sup" | "sub" => {
             stack.push((name.clone(), style.clone()));
             match name.as_str() {
                 "b" | "strong" => style.bold = true,
                 "i" | "em" => style.italic = true,
                 "u" => style.underline = true,
+                "s" | "strike" | "del" => style.strike = true,
+                "mark" => style.highlight = Some([255, 242, 0, 255]),
                 "sup" | "sub" => style.size_scale *= 0.75,
                 _ => apply_style_attributes(attrs, style),
             }
@@ -135,11 +262,36 @@ fn apply_tag(tag: &str, buf: &mut String, style: &mut Run, stack: &mut Vec<(Stri
     }
 }
 
+/// Pops the most recent open tag called `name` and restores the style it saved.
+fn restore(stack: &mut Vec<(String, Run)>, style: &mut Run, name: &str) {
+    if let Some(pos) = stack.iter().rposition(|(n, _)| n == name) {
+        let (_, saved) = stack[pos].clone();
+        stack.truncate(pos);
+        *style = saved;
+    }
+}
+
+fn heading(style: &mut Run, scale: f32) {
+    style.bold = true;
+    style.size_scale *= scale;
+}
+
+fn parse_align(value: Option<&str>) -> Option<AlignH> {
+    match value?.trim().to_ascii_lowercase().as_str() {
+        "left" => Some(AlignH::Left),
+        "center" | "centre" => Some(AlignH::Center),
+        "right" => Some(AlignH::Right),
+        "justify" => Some(AlignH::Justify),
+        _ => None,
+    }
+}
+
 /// Applies `color`, `size`, `face` attributes and `style="..."` declarations.
 fn apply_style_attributes(attrs: &str, style: &mut Run) {
     for (key, value) in attribute_pairs(attrs) {
         match key.as_str() {
             "color" => style.color = parse_color(&value).or(style.color),
+            "face" => style.family = Some(value.trim().to_string()),
             "size" => {
                 // 1..7 are HTML size steps. Larger values (Stimulsoft writes e.g. size="12") are points.
                 if let Ok(n) = value.trim().parse::<f32>() {
@@ -157,11 +309,18 @@ fn apply_style_attributes(attrs: &str, style: &mut Run) {
                     match prop.as_str() {
                         "color" => style.color = parse_color(val).or(style.color),
                         "font-size" => style.size_pt = parse_pt(val).or(style.size_pt),
+                        "font-family" => style.family = Some(val.trim_matches(|c| c == '\'' || c == '"').to_string()),
                         "font-weight" => style.bold = val.eq_ignore_ascii_case("bold") || val == "700",
                         "font-style" => style.italic = val.eq_ignore_ascii_case("italic"),
                         "text-decoration" | "text-decoration-line" => {
-                            style.underline = val.to_ascii_lowercase().contains("underline");
+                            let v = val.to_ascii_lowercase();
+                            style.underline = v.contains("underline");
+                            style.strike = v.contains("line-through");
                         }
+                        "background" | "background-color" => {
+                            style.highlight = parse_color(val).or(style.highlight);
+                        }
+                        "text-align" => style.align = parse_align(Some(val)).or(style.align),
                         _ => {}
                     }
                 }
@@ -169,6 +328,10 @@ fn apply_style_attributes(attrs: &str, style: &mut Run) {
             _ => {}
         }
     }
+}
+
+fn attribute_value(attrs: &str, key: &str) -> Option<String> {
+    attribute_pairs(attrs).into_iter().find(|(k, _)| k == key).map(|(_, v)| v)
 }
 
 /// Splits `key="value"` / `key='value'` / `key=value` pairs. Keys are lower-cased.
@@ -304,5 +467,49 @@ mod tests {
         assert_eq!(runs[0].color, Some([0, 255, 0, 255]));
         assert_eq!(runs[0].size_pt, Some(9.0));
         assert!(runs[0].underline);
+    }
+
+    #[test]
+    fn strike_highlight_and_family() {
+        let runs = parse_runs("<s>a</s><mark>b</mark><span style=\"background-color:#00ff00;font-family:'Courier New'\">c</span>", true);
+        assert!(runs[0].strike);
+        assert_eq!(runs[1].highlight, Some([255, 242, 0, 255]));
+        assert_eq!(runs[2].highlight, Some([0, 255, 0, 255]));
+        assert_eq!(runs[2].family.as_deref(), Some("Courier New"));
+    }
+
+    #[test]
+    fn paragraphs_carry_alignment() {
+        let paras = parse_paragraphs("<p align=\"center\">one</p><div style=\"text-align:right\">two</div>", true);
+        assert_eq!(paras.len(), 2);
+        assert_eq!(paras[0].runs[0].text, "one");
+        assert_eq!(paras[0].align, Some(AlignH::Center));
+        assert_eq!(paras[1].align, Some(AlignH::Right));
+    }
+
+    #[test]
+    fn lists_get_bullets_and_numbers() {
+        let dots = parse_paragraphs("<ul><li>a</li><li>b</li></ul>", true);
+        assert_eq!(dots.len(), 2);
+        assert_eq!(dots[0].bullet, Some(Bullet::Dot));
+        assert_eq!(dots[1].runs[0].text, "b");
+
+        let nums = parse_paragraphs("<ol><li>x</li><li>y</li></ol>", true);
+        assert_eq!(nums[1].bullet, Some(Bullet::Number(2)));
+        assert_eq!(nums[1].bullet.unwrap().label(), "2. ");
+    }
+
+    #[test]
+    fn headings_are_bold_and_larger() {
+        let runs = parse_runs("<h1>Title</h1>", true);
+        assert!(runs[0].bold);
+        assert!(runs[0].size_scale > 1.9);
+    }
+
+    #[test]
+    fn plain_text_is_one_paragraph_per_line() {
+        let paras = parse_paragraphs("a\nb\n", false);
+        assert_eq!(paras.len(), 2, "trailing empty line is dropped");
+        assert_eq!(paras[1].runs[0].text, "b");
     }
 }

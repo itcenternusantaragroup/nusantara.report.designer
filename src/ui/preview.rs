@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use eframe::egui::{self, Color32, Frame, Margin, Pos2, Rect, Sense, Stroke, Vec2};
 
 use crate::model::expr::EvalContext;
-use crate::model::richtext::parse_runs;
+use crate::model::richtext::parse_paragraphs;
 use crate::model::*;
 use super::designer::{AppMode, ReportDesignerApp};
 use super::icons::{self, Icon};
@@ -703,33 +703,58 @@ fn css_color(c: [u8; 4]) -> String {
     format!("rgba({},{},{},{:.3})", c[0], c[1], c[2], c[3] as f32 / 255.0)
 }
 
-/// The text of one component as HTML: runs with their styles when HTML tags are allowed,
-/// otherwise the escaped text. Line breaks become <br>.
+/// The text of one component as HTML: one block per paragraph (with its alignment and list
+/// marker), styled spans for the runs. Without HTML tags the text is escaped as written.
 fn text_html(comp: &Component, text: &str) -> String {
-    let runs = parse_runs(text, comp.allow_html_tags);
     let mut out = String::new();
-    for run in runs {
-        let mut style = String::new();
-        if run.bold || comp.bold {
-            style.push_str("font-weight:bold;");
+    for para in parse_paragraphs(text, comp.allow_html_tags) {
+        let align = match para.align.unwrap_or(comp.align_h) {
+            AlignH::Center => "center",
+            AlignH::Right => "right",
+            _ => "left",
+        };
+        let mut spans = String::new();
+        if let Some(bullet) = para.bullet {
+            spans.push_str(&escape_html(&bullet.label()));
         }
-        if run.italic || comp.italic {
-            style.push_str("font-style:italic;");
+        for run in &para.runs {
+            let mut style = String::new();
+            if run.bold || comp.bold {
+                style.push_str("font-weight:bold;");
+            }
+            if run.italic || comp.italic {
+                style.push_str("font-style:italic;");
+            }
+            let mut decoration = Vec::new();
+            if run.underline || comp.underline {
+                decoration.push("underline");
+            }
+            if run.strike {
+                decoration.push("line-through");
+            }
+            if !decoration.is_empty() {
+                style.push_str(&format!("text-decoration:{};", decoration.join(" ")));
+            }
+            if let Some(c) = run.color {
+                style.push_str(&format!("color:{};", css_color(c)));
+            }
+            if let Some(bg) = run.highlight {
+                style.push_str(&format!("background:{};", css_color(bg)));
+            }
+            if let Some(family) = &run.family {
+                style.push_str(&format!("font-family:'{}';", family.replace('\'', "")));
+            }
+            let size = run.size_pt.unwrap_or(comp.font_size * run.size_scale);
+            style.push_str(&format!("font-size:{size:.2}pt;"));
+            spans.push_str(&format!("<span style=\"{style}\">{}</span>", escape_html(&run.text)));
         }
-        if run.underline || comp.underline {
-            style.push_str("text-decoration:underline;");
+        if spans.is_empty() {
+            spans.push_str("&nbsp;");
         }
-        if let Some(c) = run.color {
-            style.push_str(&format!("color:{};", css_color(c)));
-        }
-        let size = run.size_pt.unwrap_or(comp.font_size * run.size_scale);
-        style.push_str(&format!("font-size:{size:.2}pt;"));
-        let body = escape_html(&run.text).replace('\n', "<br>");
-        out.push_str(&format!("<span style=\"{style}\">{body}</span>"));
+        out.push_str(&format!("<div style=\"margin:0;text-align:{align};\">{spans}</div>"));
     }
     out
 }
-
 fn sheets_to_html(app: &ReportDesignerApp) -> String {
     let sheets = build_sheets(app);
     let total = sheets.len();

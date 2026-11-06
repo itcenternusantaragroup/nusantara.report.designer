@@ -41,6 +41,38 @@ pub fn show(ui: &mut egui::Ui, comp: &mut Component) -> bool {
         if icons::letter_button(ui, "U", "Underline", true, false, true).clicked() {
             changed |= wrap_selection(ui.ctx(), id, &mut comp.text, "<u>", "</u>");
         }
+        if icons::letter_button(ui, "S", "Strikethrough", true, false, false).clicked() {
+            changed |= wrap_selection(ui.ctx(), id, &mut comp.text, "<s>", "</s>");
+        }
+        if icons::chip(ui, None, "Highlight", true, false).clicked() {
+            changed |= wrap_selection(ui.ctx(), id, &mut comp.text, "<mark>", "</mark>");
+        }
+
+        ui.separator();
+
+        egui::ComboBox::from_id_salt(("html_heading", comp.id.as_str()))
+            .width(86.0)
+            .selected_text("Heading")
+            .show_ui(ui, |ui| {
+                for level in 1..=3 {
+                    if ui.selectable_label(false, format!("Heading {level}")).clicked() {
+                        let (open, close) = (format!("<h{level}>"), format!("</h{level}>"));
+                        changed |= wrap_selection(ui.ctx(), id, &mut comp.text, &open, &close);
+                    }
+                }
+            });
+        if icons::chip(ui, None, "List", true, false).on_hover_text("Bulleted item").clicked() {
+            changed |= wrap_selection(ui.ctx(), id, &mut comp.text, "<ul><li>", "</li></ul>");
+        }
+        if icons::chip(ui, None, "Numbered", true, false).on_hover_text("Numbered item").clicked() {
+            changed |= wrap_selection(ui.ctx(), id, &mut comp.text, "<ol><li>", "</li></ol>");
+        }
+        for (label, align) in [("Left", "left"), ("Centre", "center"), ("Right", "right")] {
+            if icons::chip(ui, None, label, true, false).on_hover_text("Paragraph alignment").clicked() {
+                let open = format!("<p align=\"{align}\">");
+                changed |= wrap_selection(ui.ctx(), id, &mut comp.text, &open, "</p>");
+            }
+        }
 
         ui.separator();
 
@@ -108,10 +140,15 @@ fn preview(ui: &mut egui::Ui, comp: &Component) {
         .inner_margin(Margin::symmetric(8.0, 6.0))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            let job = rt::layout_job(comp, &comp.text, rt::px_per_pt(1.0), Some(ui.available_width()));
-            let galley = ui.painter().layout_job(job);
-            let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), galley.size().y.max(18.0)), Sense::hover());
-            ui.painter().galley(rect.min, galley, Color32::BLACK);
+            // Drawn by the same code as the page, so the preview matches it.
+            let width = ui.available_width();
+            let mut preview = comp.clone();
+            preview.word_wrap = true;
+            let px = rt::px_per_pt(1.0);
+            let height = rt::measure(ui.ctx(), &preview, &preview.text, width, px).max(18.0);
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+            let painter = ui.painter().clone();
+            rt::draw(&painter, &preview, &preview.text, rect, px);
         });
 }
 

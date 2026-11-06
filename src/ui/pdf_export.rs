@@ -16,7 +16,7 @@ use printpdf::TextMatrix;
 use crate::model::report::Watermark;
 
 use crate::model::expr::EvalContext;
-use crate::model::richtext::parse_runs;
+use crate::model::richtext::{parse_paragraphs, Run};
 use crate::model::*;
 use super::designer::ReportDesignerApp;
 use super::preview::{base_vars, build_sheets, page_size};
@@ -157,9 +157,14 @@ struct Seg {
     size: f32,
     color: [u8; 4],
     underline: bool,
+    strike: bool,
+    highlight: Option<[u8; 4]>,
     /// Width in points.
     width: f32,
 }
+
+/// A paragraph of segments with its alignment.
+type Para = (Vec<Seg>, AlignH);
 
 /// Splits text into words, spaces and hard line breaks.
 fn pieces(text: &str) -> Vec<(String, Kind)> {
@@ -182,20 +187,66 @@ fn pieces(text: &str) -> Vec<(String, Kind)> {
     out
 }
 
-/// The text of a component as styled segments, following its HTML runs when allowed.
-fn runs_to_segs(comp: &Component, text: &str, fonts: &Fonts) -> Vec<Seg> {
-    let mut segs = Vec::new();
-    for run in parse_runs(text, comp.allow_html_tags) {
-        let style = (run.bold || comp.bold) as usize | (((run.italic || comp.italic) as usize) << 1);
-        let size = run.size_pt.unwrap_or(comp.font_size * run.size_scale);
-        let color = run.color.unwrap_or(comp.text_color);
-        let underline = run.underline || comp.underline;
-        for (piece, kind) in pieces(&run.text) {
-            let width = if kind == Kind::Break { 0.0 } else { width_pt(&fonts.faces[style], &piece, size) };
-            segs.push(Seg { text: piece, kind, style, size, color, underline, width });
+/// The text of a component as paragraphs of styled segments, following its HTML when allowed.
+fn paragraphs_to_segs(comp: &Component, text: &str, fonts: &Fonts) -> Vec<Para> {
+    let mut out = Vec::new();
+    for para in parse_paragraphs(text, comp.allow_html_tags) {
+        let align = para.align.unwrap_or(comp.align_h);
+        let mut segs = Vec::new();
+        if let Some(bullet) = para.bullet {
+            let style = para.runs.first().map_or(0, |r| style_bits(comp, r));
+            let size = para.runs.first().map_or(comp.font_size, |r| run_size(comp, r));
+            let label = bullet.label();
+            let width = width_pt(&fonts.faces[style], &label, size);
+            segs.push(Seg {
+                text: label,
+                kind: Kind::Word,
+                style,
+                size,
+                color: para.runs.first().and_then(|r| r.color).unwrap_or(comp.text_color),
+                underline: false,
+                strike: false,
+                highlight: None,
+                width,
+            });
         }
+        for run in &para.runs {
+            let style = style_bits(comp, run);
+            let size = run_size(comp, run);
+            let color = run.color.unwrap_or(comp.text_color);
+            let underline = run.underline || comp.underline;
+            for (piece, kind) in pieces(&run.text) {
+                let width = width_pt(&fonts.faces[style], &piece, size);
+                segs.push(Seg {
+                    text: piece,
+                    kind,
+                    style,
+                    size,
+                    color,
+                    underline,
+                    strike: run.strike,
+                    highlight: run.highlight,
+                    width,
+                });
+            }
+        }
+        out.push((segs, align));
     }
-    segs
+    out
+}
+
+/// Bold = bit 0, italic = bit 1 (the index into the font faces).
+fn style_bits(comp: &Component, run: &Run) -> usize {
+    (run.bold || comp.bold) as usize | (((run.italic || comp.italic) as usize) << 1)
+}
+
+fn run_size(comp: &Component, run: &Run) -> f32 {
+    run.size_pt.unwrap_or(comp.font_size * run.size_scale)
+}
+
+/// One paragraph as a single style-less segment list, for fields that are not rich text.
+fn plain_para(segs: Vec<Seg>, align: AlignH) -> Vec<Para> {
+    vec![(segs, align)]
 }
 
 /// Splits segments into lines. With `max_w` (points) the lines are word-wrapped.
@@ -230,26 +281,32 @@ fn layout_lines(segs: Vec<Seg>, max_w: Option<f32>) -> Vec<Vec<Seg>> {
     lines
 }
 
-/// Draws text inside a box (mm, top-left origin on the page). `base` is the component font size.
+/// Draws paragraphs inside a box (mm, top-left origin on the page). `base` is the component font
+/// size. Each paragraph aligns with its own alignment; the block as a whole is aligned vertically.
 #[allow(clippy::too_many_arguments)]
 fn draw_text(
     layer: &PdfLayerReference,
     fonts: &Fonts,
     ph: f32,
-    segs: Vec<Seg>,
+    paras: Vec<Para>,
     base: f32,
     (x, y, w, h): (f32, f32, f32, f32),
-    align_h: AlignH,
     align_v: AlignV,
     wrap: bool,
 ) {
     let box_w = w * PT_PER_MM;
-    let lines = layout_lines(segs, wrap.then_some(box_w));
+    // Word-wrap every paragraph; each resulting line keeps its paragraph's alignment.
+    let mut lines: Vec<(Vec<Seg>, AlignH)> = Vec::new();
+    for (segs, align) in paras {
+        for line in layout_lines(segs, wrap.then_some(box_w)) {
+            lines.push((line, align));
+        }
+    }
     let line_size = |line: &[Seg]| {
         let m = line.iter().map(|s| s.size).fold(0.0_f32, f32::max);
         if m > 0.0 { m } else { base }
     };
-    let total: f32 = lines.iter().map(|l| line_size(l) * 1.15).sum();
+    let total: f32 = lines.iter().map(|(l, _)| line_size(l) * 1.15).sum();
     let box_h = h * PT_PER_MM;
     let mut top = match align_v {
         AlignV::Top => 0.0,
@@ -257,7 +314,7 @@ fn draw_text(
         AlignV::Bottom => box_h - total,
     };
 
-    for line in &lines {
+    for (line, align_h) in &lines {
         let size = line_size(line);
         let line_w: f32 = line.iter().map(|s| s.width).sum();
         let mut cx = match align_h {
@@ -266,6 +323,20 @@ fn draw_text(
             _ => 0.0,
         };
         let baseline_mm = y + (top + size * 0.905) * MM_PER_PT;
+        let line_top_mm = y + top * MM_PER_PT;
+        let line_h_mm = size * 1.15 * MM_PER_PT;
+
+        // Highlights first, so the text is drawn over them.
+        let mut hx = cx;
+        for seg in line {
+            if let Some(bg) = seg.highlight {
+                layer.set_fill_color(rgb(bg));
+                let x0 = x + hx * MM_PER_PT;
+                layer.add_polygon(rect_poly(ph, x0, line_top_mm, seg.width * MM_PER_PT, line_h_mm, PaintMode::Fill));
+            }
+            hx += seg.width;
+        }
+
         for seg in line {
             layer.set_fill_color(rgb(seg.color));
             layer.use_text(
@@ -278,6 +349,10 @@ fn draw_text(
             if seg.underline {
                 let uy = baseline_mm + seg.size * 0.12 * MM_PER_PT;
                 stroke_line(layer, ph, (x + cx * MM_PER_PT, uy), (x + (cx + seg.width) * MM_PER_PT, uy), seg.color, 0.4);
+            }
+            if seg.strike {
+                let sy = baseline_mm - seg.size * 0.3 * MM_PER_PT;
+                stroke_line(layer, ph, (x + cx * MM_PER_PT, sy), (x + (cx + seg.width) * MM_PER_PT, sy), seg.color, 0.4);
             }
             cx += seg.width;
         }
@@ -342,8 +417,8 @@ fn draw_component(layer: &PdfLayerReference, fonts: &Fonts, ph: f32, comp: &Comp
 
     match comp.comp_type {
         ComponentType::Text => {
-            let segs = runs_to_segs(comp, &comp.text, fonts);
-            draw_text(layer, fonts, ph, segs, comp.font_size, (x, y, w, h), comp.align_h, comp.align_v, comp.word_wrap);
+            let paras = paragraphs_to_segs(comp, &comp.text, fonts);
+            draw_text(layer, fonts, ph, paras, comp.font_size, (x, y, w, h), comp.align_v, comp.word_wrap);
         }
         ComponentType::Barcode => {
             let text_h = 3.5;
@@ -365,9 +440,11 @@ fn draw_component(layer: &PdfLayerReference, fonts: &Fonts, ph: f32, comp: &Comp
                 size: 9.0,
                 color: [0, 0, 0, 255],
                 underline: false,
+                strike: false,
+                highlight: None,
                 width: width_pt(&fonts.faces[0], &comp.text, 9.0),
             }];
-            draw_text(layer, fonts, ph, segs, 9.0, (x + 1.0, y, w - 2.0, h), AlignH::Center, AlignV::Bottom, false);
+            draw_text(layer, fonts, ph, plain_para(segs, AlignH::Center), 9.0, (x + 1.0, y, w - 2.0, h), AlignV::Bottom, false);
         }        ComponentType::Line => {
             let width = border_pt(comp);
             if w < h {
@@ -419,8 +496,11 @@ fn draw_component(layer: &PdfLayerReference, fonts: &Fonts, ph: f32, comp: &Comp
                 stroke_line(layer, ph, p(0.42, 0.75), p(0.82, 0.25), [0, 0, 0, 255], width);
             }
             let text_x = x + side + 0.8;
-            let segs = runs_to_segs(comp, &comp.text, fonts);
-            draw_text(layer, fonts, ph, segs, comp.font_size, (text_x, y, w - side - 0.8, h), AlignH::Left, AlignV::Center, false);
+            // The label sits left of the box, whatever the component's alignment.
+            let mut label = comp.clone();
+            label.align_h = AlignH::Left;
+            let paras = paragraphs_to_segs(&label, &comp.text, fonts);
+            draw_text(layer, fonts, ph, paras, comp.font_size, (text_x, y, w - side - 0.8, h), AlignV::Center, false);
         }
         ComponentType::Image => {
             if let Some(bytes) = &comp.image_data {
@@ -456,14 +536,14 @@ mod tests {
     fn seg(text: &str) -> Seg {
         let (t, kind) = pieces(text).remove(0);
         let width = if kind == Kind::Space { 5.0 } else { text.chars().count() as f32 * 10.0 };
-        Seg { text: t, kind, style: 0, size: 10.0, color: [0, 0, 0, 255], underline: false, width }
+        Seg { text: t, kind, style: 0, size: 10.0, color: [0, 0, 0, 255], underline: false, strike: false, highlight: None, width }
     }
 
     #[test]
     fn word_wrap_breaks_at_spaces_and_hard_breaks() {
         let segs: Vec<Seg> = ["aa", " ", "bb", " ", "cc", "\n", "dd"]
             .iter()
-            .map(|t| if *t == "\n" { Seg { text: String::new(), kind: Kind::Break, style: 0, size: 10.0, color: [0; 4], underline: false, width: 0.0 } } else { seg(t) })
+            .map(|t| if *t == "\n" { Seg { text: String::new(), kind: Kind::Break, style: 0, size: 10.0, color: [0; 4], underline: false, strike: false, highlight: None, width: 0.0 } } else { seg(t) })
             .collect();
         let lines = layout_lines(segs, Some(45.0));
         let texts: Vec<String> = lines.iter().map(|l| l.iter().map(|s| s.text.as_str()).collect()).collect();
@@ -522,6 +602,12 @@ mod demo_tests {
         cond.rect = RectMm::new(20.0, 70.0, 60.0, 8.0);
         cond.conditions = vec![CondRule { op: CondOp::Greater, value: "100".into(), bg_color: [255, 235, 156, 255], text_color: [156, 0, 6, 255] }];
         page.components.push(cond);
+        let mut rich = Component::default();
+        rich.allow_html_tags = true;
+        rich.rect = RectMm::new(20.0, 90.0, 150.0, 60.0);
+        rich.text = "<h2>Judul <s>lama</s> <mark>baru</mark></h2><p align=\"center\">Rata tengah</p><ul><li>Pertama <b>tebal</b></li><li>Kedua</li></ul><ol><li><font color=\"#D93025\">Merah</font></li></ol><div style=\"text-align:right\">Rata kanan</div>".into();
+        rich.font_size = 11.0;
+        page.components.push(rich);
         let bytes = sheets_to_pdf(&app).expect("export");
         std::fs::write(&out, bytes).expect("write");
     }
