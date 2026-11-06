@@ -187,15 +187,20 @@ impl PreviewView {
 // ---------------------------------------------------------------------------
 
 pub(super) fn build_sheets(app: &ReportDesignerApp) -> Vec<Sheet> {
+    build_report_sheets(&app.report, 0)
+}
+
+/// The pages of `report` laid out as sheets. `depth` counts nested subreports.
+fn build_report_sheets(report: &Report, depth: usize) -> Vec<Sheet> {
     let mut sheets = Vec::new();
-    for (pi, page) in app.report.pages.iter().enumerate() {
-        sheets.extend(paginate(app, pi, page));
+    for (pi, page) in report.pages.iter().enumerate() {
+        sheets.extend(paginate(report, pi, page, depth));
     }
     sheets
 }
 
-fn paginate(app: &ReportDesignerApp, pi: usize, page: &Page) -> Vec<Sheet> {
-    let dict = &app.report.dictionary;
+fn paginate(report: &Report, pi: usize, page: &Page, depth: usize) -> Vec<Sheet> {
+    let dict = &report.dictionary;
     let (_, ph) = page.effective_dimensions();
     let find = |t: BandType| page.bands.iter().find(|b| b.band_type == t);
     let page_header = find(BandType::PageHeader);
@@ -232,11 +237,11 @@ fn paginate(app: &ReportDesignerApp, pi: usize, page: &Page) -> Vec<Sheet> {
     flow.new_sheet();
 
     // Components outside any band print once, on the first sheet of the page.
-    for c in page.components.iter().filter(|c| c.parent_band_id.is_none() && c.table.is_none()) {
+    for c in page.components.iter().filter(|c| c.parent_band_id.is_none() && c.table.is_none() && c.subreport.is_none()) {
         match &c.crosstab {
             // A cross-tab prints as its grid of cells.
             Some(ct) => {
-                for cell in crate::model::crosstab::cells(c, ct, &app.report.dictionary) {
+                for cell in crate::model::crosstab::cells(c, ct, &report.dictionary) {
                     flow.items.push(Item { comp: cell, rows: HashMap::new() });
                 }
             }
@@ -249,8 +254,8 @@ fn paginate(app: &ReportDesignerApp, pi: usize, page: &Page) -> Vec<Sheet> {
     order.extend(
         page.components
             .iter()
-            .filter(|c| c.parent_band_id.is_none() && c.table.is_some())
-            .map(|c| (c.rect.y, Flowable::Table(c))),
+            .filter(|c| c.parent_band_id.is_none() && (c.table.is_some() || c.subreport.is_some()))
+            .map(|c| (c.rect.y, if c.subreport.is_some() { Flowable::Sub(c) } else { Flowable::Table(c) })),
     );
     order.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
     let none = HashMap::new();
@@ -263,7 +268,11 @@ fn paginate(app: &ReportDesignerApp, pi: usize, page: &Page) -> Vec<Sheet> {
         let band = match item {
             Flowable::Band(b) => b,
             Flowable::Table(c) => {
-                flow_table(&mut flow, c, &app.report.dictionary);
+                flow_table(&mut flow, c, &report.dictionary);
+                continue;
+            }
+            Flowable::Sub(c) => {
+                flow_subreport(&mut flow, c, report, depth);
                 continue;
             }
         };
@@ -506,10 +515,68 @@ impl<'a> Flow<'a> {
     }
 }
 
+/// Prints a subreport: its pages are laid out in place, one block per page, starting at the
+/// component's left edge and the flow position. Text is evaluated with the subreport's own data.
+fn flow_subreport(flow: &mut Flow, comp: &Component, parent: &Report, depth: usize) {
+    const MAX_DEPTH: usize = 4;
+    let Some(path) = comp.subreport.as_deref() else { return };
+    if comp.rect.y > flow.y {
+        flow.y = comp.rect.y.min(flow.limit);
+    }
+    let sub = if depth < MAX_DEPTH { crate::model::subreport::load(path, parent.file_path.as_deref()) } else { None };
+    let Some(sub) = sub else {
+        let mut note = Component::default();
+        note.comp_type = ComponentType::Text;
+        note.name = "SubreportMissing".to_string();
+        note.rect = RectMm::new(comp.rect.x, flow.y, comp.rect.w.max(60.0), 6.0);
+        note.text = if path.trim().is_empty() {
+            "Subreport: no file chosen".to_string()
+        } else {
+            format!("Subreport not found: {path}")
+        };
+        note.font_size = 8.0;
+        note.text_color = [200, 0, 0, 255];
+        note.word_wrap = false;
+        flow.items.push(Item { comp: note, rows: HashMap::new() });
+        flow.y += 6.0;
+        flow.body = true;
+        return;
+    };
+
+    let sheets = build_report_sheets(&sub, depth + 1);
+    let total = sheets.len();
+    for (k, sheet) in sheets.iter().enumerate() {
+        let page = &sub.pages[sheet.page_idx];
+        let (top, left) = (page.margins.top, page.margins.left);
+        let mut vars = report_vars(&sub);
+        vars.insert("PageNumber".to_string(), (k + 1).to_string());
+        vars.insert("TotalPageCount".to_string(), total.to_string());
+
+        // Each subreport page is one block: as tall as its lowest item.
+        let block_h = sheet.items.iter().map(|i| i.comp.rect.y + i.comp.rect.h - top).fold(0.0_f32, f32::max);
+        if k > 0 || (flow.body && flow.y + block_h > flow.limit) {
+            flow.new_sheet();
+        }
+        let base_y = flow.y;
+        for item in &sheet.items {
+            let mut c = item.comp.clone();
+            c.rect.x = comp.rect.x + (c.rect.x - left);
+            c.rect.y = base_y + (c.rect.y - top);
+            if matches!(c.comp_type, ComponentType::Text | ComponentType::Barcode | ComponentType::CheckBox) {
+                let eval = EvalContext { dictionary: &sub.dictionary, row_index: &item.rows, vars: &vars };
+                c.text = eval.evaluate(&c.text);
+            }
+            flow.items.push(Item { comp: c, rows: HashMap::new() });
+        }
+        flow.y = base_y + block_h.max(0.0);
+        flow.body = true;
+    }
+}
 /// A page item in flow order: a band, or a table.
 enum Flowable<'a> {
     Band(&'a Band),
     Table(&'a Component),
+    Sub(&'a Component),
 }
 
 /// What a table row is, for paging: a repeated header goes in front of body and footer rows
@@ -823,8 +890,13 @@ fn comp_as_text(comp: &Component) -> Component {
 // ---------------------------------------------------------------------------
 
 pub(super) fn base_vars(app: &ReportDesignerApp) -> HashMap<String, String> {
+    report_vars(&app.report)
+}
+
+/// The values every page of report can use: its variables, the date and the time.
+pub(super) fn report_vars(report: &Report) -> HashMap<String, String> {
     let mut vars = HashMap::new();
-    for v in &app.report.dictionary.variables {
+    for v in &report.dictionary.variables {
         vars.insert(v.name.clone(), v.value.clone());
     }
     let (y, m, d) = today();
@@ -1477,5 +1549,61 @@ mod table_tests {
         let text = serde_json::to_string(&json).expect("text");
         let loaded = crate::model::MrtHandler::from_mrt_content(&text).expect("load");
         assert_eq!(loaded.pages[0].components[0].table, Some(spec));
+    }
+}
+#[cfg(test)]
+mod subreport_tests {
+    use super::*;
+    use crate::model::{Band, BandType, DataSource, MrtHandler, Report};
+
+    fn row(v: &str) -> HashMap<String, String> {
+        HashMap::from([("v".to_string(), v.to_string())])
+    }
+
+    #[test]
+    fn subreport_prints_its_own_rows_inside_the_parent() {
+        let dir = std::env::temp_dir().join(format!("nusa_sub_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let main_path = dir.join("main.mrt");
+        let sub_path = dir.join("sub.mrt");
+
+        // The subreport: one data band over its own source, with two rows.
+        let mut sub = Report::blank();
+        sub.dictionary.data_sources = vec![DataSource { name: "subds".into(), alias: "subds".into(), columns: Vec::new(), rows: vec![row("a"), row("b")] }];
+        sub.pages[0].bands = vec![Band {
+            id: "sb".into(),
+            name: "sb".into(),
+            band_type: BandType::DataBand,
+            top: 0.0,
+            height: 8.0,
+            data_source: Some("subds".into()),
+            group_by: None,
+            keep_together: false,
+            detail_of: None,
+        }];
+        let mut line = Component::default();
+        line.parent_band_id = Some("sb".into());
+        line.text = "Row {subds.v}".into();
+        sub.pages[0].components.push(line);
+        MrtHandler::save_to_file(&sub, &sub_path).expect("save subreport");
+
+        // The main report: a subreport component at the top of its page.
+        let mut main = Report::blank();
+        main.file_path = Some(main_path.to_string_lossy().to_string());
+        let mut comp = Component::default();
+        comp.name = "Sub1".into();
+        comp.rect = RectMm::new(10.0, 20.0, 100.0, 20.0);
+        comp.subreport = Some("sub.mrt".into());
+        main.pages[0].components.push(comp);
+
+        let mut app = ReportDesignerApp::new(None, None);
+        app.report = main;
+        let sheets = build_sheets(&app);
+        let texts: Vec<&str> = sheets.iter().flat_map(|s| s.items.iter()).map(|i| i.comp.text.as_str()).collect();
+        assert_eq!(texts, vec!["Row a", "Row b"]);
+        let ys: Vec<f32> = sheets.iter().flat_map(|s| s.items.iter()).map(|i| i.comp.rect.y).collect();
+        assert!(ys[1] > ys[0], "the second row is printed below the first");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

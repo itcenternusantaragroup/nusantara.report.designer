@@ -193,6 +193,20 @@ impl RibbonBar {
                             app.refresh_code_buffer();
                             ui.close_menu();
                         }
+                        if ui.button("Subreport").on_hover_text("Print another report (.mrt file) here, with its own data").clicked() {
+                            app.push_undo();
+                            let mut c = Component::default();
+                            c.name = format!("Subreport_{}", app.current_page().components.len() + 1);
+                            c.rect = RectMm::new(20.0, 60.0, 150.0, 30.0);
+                            c.text = "[Subreport]".into();
+                            c.subreport = Some(String::new());
+                            let id = c.id.clone();
+                            app.current_page_mut().components.push(c);
+                            app.selected_component_id = Some(id);
+                            app.selected_band_id = None;
+                            app.refresh_code_buffer();
+                            ui.close_menu();
+                        }
                         if ui.button("Cross-tab").on_hover_text("Pivot table built from a data source").clicked() {
                             match crate::model::crosstab::default_for(&app.report.dictionary) {
                                 Some(ct) => {

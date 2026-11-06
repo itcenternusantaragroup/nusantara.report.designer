@@ -630,6 +630,7 @@ fn parse_component(cv: &Value, unit: f32) -> Option<Component> {
     comp.allow_html_tags = flag_of(cv, "AllowHtmlTags");
     comp.crosstab = cv.get("CrossTab").and_then(|x| serde_json::from_value(x.clone()).ok());
     comp.table = cv.get("TableSpec").and_then(|x| serde_json::from_value(x.clone()).ok());
+    comp.subreport = Some(str_of(cv, "Subreport").to_string()).filter(|s| !s.is_empty());
     comp.conditions = cv.get("Conditions").and_then(|x| serde_json::from_value(x.clone()).ok()).unwrap_or_default();
     // Picture data is stored as base64 (JSON string, or the same text in XML).
     if let Some(b64) = cv.get("ImageBytes").and_then(|x| x.as_str()).map(str::trim).filter(|s| !s.is_empty()) {

@@ -39,6 +39,7 @@ impl PropertiesPanel {
         let ds_sources: Vec<(String, Vec<String>)> = app.report.dictionary.data_sources.iter()
             .map(|ds| (ds.name.clone(), ds.columns.iter().map(|c| c.name.clone()).collect()))
             .collect();
+        let base_dir = app.report.file_path.as_deref().and_then(|p| std::path::Path::new(p).parent().map(|d| d.to_path_buf()));
         let ds_columns: Vec<(String, String)> = app.report.dictionary.data_sources.iter()
             .flat_map(|ds| ds.columns.iter().map(move |col| (ds.name.clone(), col.name.clone())))
             .collect();
@@ -48,7 +49,25 @@ impl PropertiesPanel {
                 Some(c) => c,
                 None => return,
             };
-            if let Some(spec) = comp.table.as_mut() {
+            if let Some(path) = comp.subreport.as_mut() {
+                egui::CollapsingHeader::new("Subreport").id_salt("subreport_section").default_open(true).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("File:");
+                        changed |= ui.add(egui::TextEdit::singleline(path).hint_text("report.mrt").desired_width(150.0)).changed();
+                    });
+                    if ui.button("Choose file...").clicked() {
+                        if let Some(file) = rfd::FileDialog::new().add_filter("Report (*.mrt)", &["mrt"]).pick_file() {
+                            // A file in this report's folder is stored relative to it.
+                            *path = match base_dir.as_ref().and_then(|b| file.strip_prefix(b).ok()) {
+                                Some(rel) => rel.to_string_lossy().to_string(),
+                                None => file.to_string_lossy().to_string(),
+                            };
+                            changed = true;
+                        }
+                    }
+                    ui.label(egui::RichText::new("Printed inside this report, with its own data.").weak());
+                });
+            }            if let Some(spec) = comp.table.as_mut() {
                 egui::CollapsingHeader::new("Table").id_salt("table_section").default_open(true).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Rows from:");

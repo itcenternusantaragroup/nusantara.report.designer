@@ -267,6 +267,7 @@ impl MrtHandler {
             "AllowHtmlTags": comp.allow_html_tags,
             "CrossTab": serde_json::to_value(&comp.crosstab).unwrap_or(Value::Null),
             "TableSpec": serde_json::to_value(&comp.table).unwrap_or(Value::Null),
+            "Subreport": comp.subreport.clone().unwrap_or_default(),
             "Conditions": serde_json::to_value(&comp.conditions).unwrap_or(Value::Null),
             "ImageBytes": comp.image_data.as_ref().map(|b| {
                 use base64::Engine;

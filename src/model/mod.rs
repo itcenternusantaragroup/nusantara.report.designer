@@ -1,5 +1,6 @@
 pub mod barcode;
 pub mod crosstab;
+pub mod subreport;
 pub mod dictionary;
 pub mod mrt;
 pub mod report;

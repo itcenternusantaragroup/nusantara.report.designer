@@ -256,6 +256,9 @@ pub struct Component {
     /// A native table: header, body and footer rows over columns. Built when the page is printed.
     #[serde(default)]
     pub table: Option<TableSpec>,
+    /// Subreport: the path of the .mrt file printed here (relative to this report's folder).
+    #[serde(default)]
+    pub subreport: Option<String>,
 }
 
 /// One column of a table: its width and the text of its header, body and footer cells. Body and
@@ -365,6 +368,7 @@ impl Default for Component {
             conditions: Vec::new(),
             crosstab: None,
             table: None,
+            subreport: None,
         }
     }
 }
@@ -627,6 +631,7 @@ impl Default for Report {
             conditions: Vec::new(),
             crosstab: None,
             table: None,
+            subreport: None,
         };
 
         let comp_subtitle = Component {
@@ -657,6 +662,7 @@ impl Default for Report {
             conditions: Vec::new(),
             crosstab: None,
             table: None,
+            subreport: None,
         };
 
         // 2. Header Band (Table Column Headers)
@@ -700,6 +706,7 @@ impl Default for Report {
             conditions: Vec::new(),
             crosstab: None,
             table: None,
+            subreport: None,
         };
 
         let h_customer = Component {
@@ -730,6 +737,7 @@ impl Default for Report {
             conditions: Vec::new(),
             crosstab: None,
             table: None,
+            subreport: None,
         };
 
         let h_product = Component {
@@ -760,6 +768,7 @@ impl Default for Report {
             conditions: Vec::new(),
             crosstab: None,
             table: None,
+            subreport: None,
         };
 
         let h_qty = Component {
@@ -790,6 +799,7 @@ impl Default for Report {
             conditions: Vec::new(),
             crosstab: None,
             table: None,
+            subreport: None,
         };
 
         let h_price = Component {
@@ -820,6 +830,7 @@ impl Default for Report {
             conditions: Vec::new(),
             crosstab: None,
             table: None,
+            subreport: None,
         };
 
         let h_total = Component {
@@ -850,6 +861,7 @@ impl Default for Report {
             conditions: Vec::new(),
             crosstab: None,
             table: None,
+            subreport: None,
         };
 
         // 3. Data Band (Row Template)
@@ -893,6 +905,7 @@ impl Default for Report {
             conditions: Vec::new(),
             crosstab: None,
             table: None,
+            subreport: None,
         };
 
         let d_customer = Component {
@@ -923,6 +936,7 @@ impl Default for Report {
             conditions: Vec::new(),
             crosstab: None,
             table: None,
+            subreport: None,
         };
 
         let d_product = Component {
@@ -953,6 +967,7 @@ impl Default for Report {
             conditions: Vec::new(),
             crosstab: None,
             table: None,
+            subreport: None,
         };
 
         let d_qty = Component {
@@ -983,6 +998,7 @@ impl Default for Report {
             conditions: Vec::new(),
             crosstab: None,
             table: None,
+            subreport: None,
         };
 
         let d_price = Component {
@@ -1013,6 +1029,7 @@ impl Default for Report {
             conditions: Vec::new(),
             crosstab: None,
             table: None,
+            subreport: None,
         };
 
         let d_total = Component {
@@ -1043,6 +1060,7 @@ impl Default for Report {
             conditions: Vec::new(),
             crosstab: None,
             table: None,
+            subreport: None,
         };
 
         // 4. Footer Band (Totals & Signature)
@@ -1086,6 +1104,7 @@ impl Default for Report {
             conditions: Vec::new(),
             crosstab: None,
             table: None,
+            subreport: None,
         };
 
         let f_sum = Component {
@@ -1116,6 +1135,7 @@ impl Default for Report {
             conditions: Vec::new(),
             crosstab: None,
             table: None,
+            subreport: None,
         };
 
         // 5. Page Footer Band
@@ -1159,6 +1179,7 @@ impl Default for Report {
             conditions: Vec::new(),
             crosstab: None,
             table: None,
+            subreport: None,
         };
 
         let pf_page_num = Component {
@@ -1189,6 +1210,7 @@ impl Default for Report {
             conditions: Vec::new(),
             crosstab: None,
             table: None,
+            subreport: None,
         };
 
         // Extra elements: Barcode for order tracking
@@ -1220,6 +1242,7 @@ impl Default for Report {
             conditions: Vec::new(),
             crosstab: None,
             table: None,
+            subreport: None,
         };
 
         page.bands = vec![title_band, header_band, data_band, footer_band, page_footer_band];
