@@ -2,6 +2,7 @@
 
 pub mod model;
 pub mod ui;
+pub mod update;
 
 use eframe::egui;
 use ui::ReportDesignerApp;

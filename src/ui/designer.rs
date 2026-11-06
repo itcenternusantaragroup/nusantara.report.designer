@@ -122,6 +122,15 @@ pub struct ReportDesignerApp {
     pub extra_selected: Vec<String>,
     /// Short pop-up message (text, time shown), for example after a save.
     pub toast: Option<(String, std::time::Instant)>,
+    /// Pending result of a background update check.
+    pub update_rx: Option<std::sync::mpsc::Receiver<crate::update::CheckResult>>,
+    /// A newer release to show in the banner.
+    pub update_notice: Option<crate::update::Release>,
+    /// Tag the user closed the banner for; it is not shown again for this tag.
+    pub update_dismissed: Option<String>,
+    /// True when the user asked for the check (then the result is always reported).
+    pub update_manual: bool,
+    pub last_update_check: Option<std::time::Instant>,
     /// Window title last sent to the window, so it is only updated when it changes.
     pub last_title: String,
     /// Scroll the preview to this sheet (testing: --preview-sheet N).
@@ -186,6 +195,11 @@ impl ReportDesignerApp {
             preview_sheet: None,
             images: Default::default(),
             toast: None,
+            update_rx: None,
+            update_notice: None,
+            update_dismissed: None,
+            update_manual: false,
+            last_update_check: None,
             last_title: String::new(),
         }
     }
@@ -712,9 +726,92 @@ impl ReportDesignerApp {
     }
 }
 
+impl ReportDesignerApp {
+    /// Starts a background check for a newer release. Ignored while one is running.
+    pub fn start_update_check(&mut self, manual: bool) {
+        if self.update_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        crate::update::spawn_check(tx);
+        self.update_rx = Some(rx);
+        self.update_manual = manual;
+        self.last_update_check = Some(std::time::Instant::now());
+    }
+
+    /// Checks at start-up and every 6 hours; handles the result when it arrives.
+    fn poll_updates(&mut self, ctx: &egui::Context) {
+        let due = self.last_update_check.map_or(true, |t| t.elapsed() > std::time::Duration::from_secs(6 * 3600));
+        if due {
+            self.start_update_check(false);
+        }
+        // Wake up now and then so the periodic check runs even when the window is idle.
+        ctx.request_repaint_after(std::time::Duration::from_secs(600));
+
+        let Some(rx) = &self.update_rx else { return };
+        let Ok(result) = rx.try_recv() else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(300));
+            return;
+        };
+        self.update_rx = None;
+        let manual = self.update_manual;
+        match result {
+            crate::update::CheckResult::Newer(release) => {
+                if manual || self.update_dismissed.as_deref() != Some(release.tag.as_str()) {
+                    self.update_notice = Some(release);
+                }
+            }
+            crate::update::CheckResult::UpToDate => {
+                if manual {
+                    self.notify("You have the latest version.".to_string());
+                }
+            }
+            crate::update::CheckResult::Failed(e) => {
+                if manual {
+                    self.notify(format!("Could not check for updates: {e}"));
+                }
+            }
+        }
+    }
+
+    /// The banner at the top of the window, with a link to the release page.
+    fn show_update_banner(&mut self, ctx: &egui::Context) {
+        let Some(release) = self.update_notice.clone() else { return };
+        let mut close = false;
+        egui::Area::new(egui::Id::new("update_banner"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 48.0))
+            .show(ctx, |ui| {
+                egui::Frame::none()
+                    .fill(egui::Color32::from_rgb(0x1A, 0x73, 0xE8))
+                    .rounding(8.0)
+                    .inner_margin(egui::Margin::symmetric(14.0, 9.0))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("A new version is available: {}", release.tag))
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            );
+                            if ui.button("View release").clicked() {
+                                crate::update::open_url(&release.url);
+                            }
+                            if ui.button("Dismiss").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+            });
+        if close {
+            self.update_dismissed = Some(release.tag.clone());
+            self.update_notice = None;
+        }
+    }
+}
 impl eframe::App for ReportDesignerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame_count += 1;
+        self.poll_updates(ctx);
 
         // Window title follows the open file: "... - [file name]".
         let file_name = self
@@ -835,6 +932,8 @@ impl eframe::App for ReportDesignerApp {
         // Dialogs
         NewReportDialog::show(self, ctx);
         PageSetupDialog::show(self, ctx);
+
+        self.show_update_banner(ctx);
 
         // Toast: a short message in the bottom-right corner after an action.
         if let Some((msg, at)) = self.toast.clone() {

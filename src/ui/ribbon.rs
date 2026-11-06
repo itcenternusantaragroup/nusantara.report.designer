@@ -265,6 +265,10 @@ impl RibbonBar {
                     });
 
                     icons::menu(ui, "Help", |ui| {
+                        if ui.button("Check for updates").clicked() {
+                            app.start_update_check(true);
+                            ui.close_menu();
+                        }
                         if ui.button("About").clicked() {
                             app.show_about = true;
                             ui.close_menu();

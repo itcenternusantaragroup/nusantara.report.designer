@@ -27,6 +27,7 @@ fn main() {
     let _ = fs::write(state, format!("{today} {n}\n"));
 
     println!("cargo:rustc-env=APP_BUILD={today}.{n}");
+    println!("cargo:rustc-env=APP_BUILD_UNIX={}", chrono::Utc::now().timestamp());
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=assets");

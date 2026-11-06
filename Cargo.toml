@@ -5,6 +5,7 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 eframe = { version = "0.30", default-features = false, features = ["default", "glow"] }
 egui = "0.30"
 image = { version = "0.25", default-features = false, features = ["png", "webp", "jpeg"] }
@@ -16,6 +17,7 @@ uuid = { version = "1.10", features = ["v4", "fast-rng"] }
 printpdf = { version = "0.7", features = ["embedded_images"] }
 ttf-parser = "0.19"
 barcoders = "2"
+ureq = "2"
 
 [build-dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
