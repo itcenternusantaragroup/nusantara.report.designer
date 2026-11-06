@@ -8,10 +8,16 @@ fn main() -> eframe::Result<()> {
     let mut args = std::env::args().skip(1);
     let mut screenshot_path = None;
     let mut open_path = None;
+    let mut start_preview = false;
+    let mut start_about = false;
+    let mut start_splash = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--screenshot" => screenshot_path = args.next(),
             "--open" => open_path = args.next(),
+            "--preview" => start_preview = true,
+            "--about" => start_about = true,
+            "--splash" => start_splash = true,
             _ => {}
         }
     }
@@ -19,8 +25,8 @@ fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 850.0])
-            .with_title("Nusantara Report Designer - [Untitled]")
-            .with_icon(ui::icons::app_icon()),
+            .with_title(format!("Nusantara Report Designer {} (build {}) - [Untitled]", env!("CARGO_PKG_VERSION"), env!("APP_BUILD")))
+            .with_icon(ui::brand::window_icon().unwrap_or_else(ui::icons::app_icon)),
         ..Default::default()
     };
 
@@ -29,7 +35,13 @@ fn main() -> eframe::Result<()> {
         native_options,
         Box::new(|cc| {
             ui::theme::apply(&cc.egui_ctx);
-            Ok(Box::new(ReportDesignerApp::new(screenshot_path, open_path)))
+            let mut app = ReportDesignerApp::new(screenshot_path, open_path);
+            app.show_about = start_about;
+            app.splash_forced = start_splash;
+            if start_preview {
+                app.app_mode = ui::designer::AppMode::Preview;
+            }
+            Ok(Box::new(app))
         }),
     )
 }

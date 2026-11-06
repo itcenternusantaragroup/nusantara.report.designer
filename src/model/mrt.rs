@@ -255,6 +255,7 @@ impl MrtHandler {
             "ShapeKind": format!("{:?}", comp.shape_kind),
             "BarCodeType": comp.barcode_format,
             "Checked": comp.checked,
+            "AllowHtmlTags": comp.allow_html_tags,
         })
     }
 

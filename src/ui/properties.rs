@@ -63,9 +63,16 @@ impl PropertiesPanel {
             // Section 2: Text / Expression
             if comp.comp_type == ComponentType::Text || comp.comp_type == ComponentType::Barcode {
                 egui::CollapsingHeader::new("Value & Expression").default_open(true).show(ui, |ui| {
-                    ui.label("Text / Expression:");
-                    if ui.text_edit_multiline(&mut comp.text).changed() {
-                        changed = true;
+                    if comp.comp_type == ComponentType::Text && comp.allow_html_tags {
+                        ui.label("Text (HTML):");
+                        if super::html_editor::show(ui, comp) {
+                            changed = true;
+                        }
+                    } else {
+                        ui.label("Text / Expression:");
+                        if ui.text_edit_multiline(&mut comp.text).changed() {
+                            changed = true;
+                        }
                     }
 
                     // Quick Bind to Data Field dropdown
@@ -165,6 +172,13 @@ impl PropertiesPanel {
                     });
 
                     if ui.checkbox(&mut comp.word_wrap, "Word Wrap").changed() {
+                        changed = true;
+                    }
+                    if ui
+                        .checkbox(&mut comp.allow_html_tags, "Allow HTML tags")
+                        .on_hover_text("Read the text as HTML: <b>, <i>, <u>, <font>, <span>, <br>")
+                        .changed()
+                    {
                         changed = true;
                     }
                 });

@@ -1,5 +1,6 @@
 use eframe::egui::{self, Vec2};
 use crate::model::Orientation;
+use super::about;
 use super::designer::ReportDesignerApp;
 
 pub struct NewReportDialog;
@@ -163,26 +164,6 @@ impl PageSetupDialog {
                 });
         }
 
-        if app.show_about {
-            egui::Window::new("About Nusantara Report Designer")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.heading("Nusantara Report Designer");
-                    ui.label("Reads and writes .mrt format version 2020.2.3");
-                    ui.label("Supports editing, previewing, and saving .mrt files (XML and JSON).");
-                    ui.add_space(8.0);
-                    ui.label("• Visual band and component designer");
-                    ui.label("• StiText, StiImage, StiShape, StiBarCode, StiCheckBox");
-                    ui.label("• ReportTitle, PageHeader, Header, DataBand, Footer, PageFooter");
-                    ui.label("• JSON data source import and live data preview");
-                    ui.label("• Full .mrt XML/JSON synchronization");
-                    ui.add_space(12.0);
-                    if ui.button("Close").clicked() {
-                        app.show_about = false;
-                    }
-                });
-        }
+        about::show(app, ctx);
     }
 }

@@ -101,6 +101,13 @@ pub struct ReportDesignerApp {
     // Automation / Testing
     pub screenshot_path: Option<String>,
     pub frame_count: u32,
+
+    // Brand assets (icon and logo) and the start-up splash
+    pub brand: Option<super::brand::Brand>,
+    pub brand_checked: bool,
+    pub splash_started: Option<std::time::Instant>,
+    /// Show the splash even in screenshot mode (for testing).
+    pub splash_forced: bool,
 }
 
 impl ReportDesignerApp {
@@ -150,6 +157,11 @@ impl ReportDesignerApp {
 
             screenshot_path,
             frame_count: 0,
+
+            brand: None,
+            brand_checked: false,
+            splash_started: None,
+            splash_forced: false,
         }
     }
 
@@ -623,6 +635,15 @@ impl eframe::App for ReportDesignerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame_count += 1;
 
+        // Load the brand textures once, and show the splash on a normal start (not for screenshots).
+        if !self.brand_checked {
+            self.brand_checked = true;
+            self.brand = super::brand::Brand::load(ctx);
+            if self.screenshot_path.is_none() || self.splash_forced {
+                self.splash_started = Some(std::time::Instant::now());
+            }
+        }
+
         if self.screenshot_path.is_some() {
             ctx.request_repaint();
         }
@@ -713,5 +734,12 @@ impl eframe::App for ReportDesignerApp {
         // Dialogs
         NewReportDialog::show(self, ctx);
         PageSetupDialog::show(self, ctx);
+
+        // Splash on top of everything while it is visible.
+        if let (Some(brand), Some(started)) = (&self.brand, self.splash_started) {
+            if !super::brand::show_splash(ctx, brand, started) {
+                self.splash_started = None;
+            }
+        }
     }
 }

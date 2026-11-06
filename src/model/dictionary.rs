@@ -198,3 +198,25 @@ impl Dictionary {
         })
     }
 }
+
+#[cfg(test)]
+mod data_file_tests {
+    use super::*;
+
+    /// Prints each data source loaded from the JSON file named by `NUSA_DATA_FILE`.
+    #[test]
+    fn summarise_data_file() {
+        let Ok(path) = std::env::var("NUSA_DATA_FILE") else { return };
+        let sources = Dictionary::load_from_json_file(&path).expect("load json");
+        for ds in &sources {
+            let cols: Vec<&str> = ds.columns.iter().map(|c| c.name.as_str()).collect();
+            println!("DS {:<14} rows={:<4} cols={} [{}]", ds.name, ds.rows.len(), ds.columns.len(), cols.join(","));
+            if let Some(first) = ds.rows.first() {
+                let mut keys: Vec<_> = first.iter().take(4).map(|(k, v)| format!("{k}={v}")).collect();
+                keys.sort();
+                println!("    first row: {}", keys.join(" | "));
+            }
+        }
+        assert!(!sources.is_empty());
+    }
+}

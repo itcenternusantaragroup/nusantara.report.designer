@@ -1,385 +1,572 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
-use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use eframe::egui::{self, Color32, Frame, Margin, Pos2, Rect, Sense, Stroke, Vec2};
+
+use crate::model::expr::EvalContext;
+use crate::model::richtext::parse_runs;
 use crate::model::*;
 use super::designer::{AppMode, ReportDesignerApp};
+use super::icons::{self, Icon};
+use super::richtext as rt;
+use super::theme::{self, DESK, PAPER, RULE};
+
+/// Space between printed sheets, in screen pixels.
+const SHEET_GAP: f32 = 24.0;
 
 pub struct PreviewView;
 
+/// A component placed on one printed sheet. `comp.rect` is its position on that sheet (mm).
+#[derive(Clone)]
+struct Item {
+    comp: Component,
+    /// Row index per data source for the band this item came from.
+    rows: HashMap<String, usize>,
+}
+
+/// One printed page of the report.
+struct Sheet {
+    page_idx: usize,
+    items: Vec<Item>,
+}
+
 impl PreviewView {
     pub fn show(app: &mut ReportDesignerApp, ctx: &egui::Context) {
-        egui::CentralPanel::default()
-            .frame(egui::Frame::central_panel(&ctx.style())
-                .fill(Color32::from_rgb(220, 222, 225)))
+        egui::TopBottomPanel::top("preview_toolbar")
+            .frame(Frame::none().fill(PAPER).inner_margin(Margin::symmetric(12.0, 6.0)))
             .show(ctx, |ui| {
-                // Preview Toolbar
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("REPORT PREVIEW").strong().color(Color32::from_rgb(20, 80, 160)));
-                    ui.separator();
-
-                    if ui.button("⬅ Back to Designer").clicked() {
+                    if icons::chip(ui, Some(Icon::Design), "Back to design", true, false).clicked() {
                         app.app_mode = AppMode::Design;
                     }
-
                     ui.separator();
-
-                    if ui.button("📄 Export HTML...").clicked() {
+                    if icons::chip(ui, None, "Export HTML...", true, false).clicked() {
                         Self::export_html_dialog(app);
                     }
-
-                    if ui.button("📝 Export Text...").clicked() {
+                    if icons::chip(ui, None, "Export text...", true, false).clicked() {
                         Self::export_text_dialog(app);
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("+").clicked() {
                             app.zoom = (app.zoom + 0.15).min(2.5);
+                            app.fit_to_window = false;
                         }
+                        ui.label(egui::RichText::new(format!("{:.0}%", app.zoom * 100.0)).color(theme::MUTED));
                         if ui.button("-").clicked() {
                             app.zoom = (app.zoom - 0.15).max(0.5);
+                            app.fit_to_window = false;
                         }
-                        ui.label(format!("{:.0}%", app.zoom * 100.0));
                     });
                 });
+            });
 
-                ui.separator();
-
-                // Scrollable rendered document
-                egui::ScrollArea::both().show(ui, |ui| {
-                    Self::render_preview_document(app, ui);
-                });
+        egui::CentralPanel::default()
+            .frame(Frame::central_panel(&ctx.style()).fill(DESK))
+            .show(ctx, |ui| {
+                egui::ScrollArea::both()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| Self::render(app, ui));
             });
     }
 
-    fn render_preview_document(app: &ReportDesignerApp, ui: &mut egui::Ui) {
-        let zoom = app.zoom;
-        let page = app.current_page();
-        let (page_w_mm, page_h_mm) = page.effective_dimensions();
+    fn render(app: &ReportDesignerApp, ui: &mut egui::Ui) {
+        let sheets = build_sheets(app);
+        let total = sheets.len();
+        let vars = base_vars(app);
+        let mm_px = 3.78 * app.zoom;
 
-        let mm_to_px = 3.78 * zoom;
-        let page_w_px = page_w_mm * mm_to_px;
-        let page_h_px = page_h_mm * mm_to_px;
+        let max_w = sheets
+            .iter()
+            .map(|s| page_size(app, s).0 * mm_px)
+            .fold(0.0_f32, f32::max);
+        let total_h: f32 = sheets.iter().map(|s| page_size(app, s).1 * mm_px + SHEET_GAP).sum::<f32>() + SHEET_GAP;
+        let width = max_w + 80.0;
 
-        let offset = Pos2::new(40.0, 20.0);
-        let total_size = Vec2::new(page_w_px + offset.x * 2.0, page_h_px + offset.y * 2.0);
-        let (_resp, painter) = ui.allocate_painter(total_size, egui::Sense::hover());
+        let (resp, painter) = ui.allocate_painter(Vec2::new(width, total_h), Sense::hover());
+        let mut y = resp.rect.min.y + SHEET_GAP;
 
-        let page_rect = Rect::from_min_size(offset, Vec2::new(page_w_px, page_h_px));
+        for (n, sheet) in sheets.iter().enumerate() {
+            let (pw, ph) = page_size(app, sheet);
+            let (w_px, h_px) = (pw * mm_px, ph * mm_px);
+            let x = resp.rect.min.x + ((width - w_px) / 2.0).max(20.0);
+            let rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(w_px, h_px));
+            draw_paper(&painter, rect);
 
-        // Draw Paper Drop Shadow & White Sheet
-        painter.rect_filled(page_rect.translate(Vec2::new(4.0, 4.0)), 3.0, Color32::from_black_alpha(40));
-        painter.rect_filled(page_rect, 0.0, Color32::WHITE);
-        painter.rect_stroke(page_rect, 0.0, Stroke::new(1.0_f32, Color32::from_rgb(190, 195, 200)));
+            let mut sheet_vars = vars.clone();
+            sheet_vars.insert("PageNumber".to_string(), (n + 1).to_string());
+            sheet_vars.insert("TotalPageCount".to_string(), total.to_string());
 
-        // Build variable dictionary
-        let mut vars_map: HashMap<String, String> = HashMap::new();
-        for v in &app.report.dictionary.variables {
-            vars_map.insert(v.name.clone(), v.value.clone());
-        }
-        vars_map.insert("PageNumber".to_string(), "1".to_string());
-        vars_map.insert("TotalPageCount".to_string(), "1".to_string());
-        vars_map.insert("Date".to_string(), "2024-06-13".to_string());
-        vars_map.insert("Time".to_string(), "15:00".to_string());
-
-        // Find primary data source
-        let default_ds = app.report.dictionary.data_sources.first();
-
-        let title_band = page.bands.iter().find(|b| b.band_type == BandType::ReportTitle);
-        let header_band = page.bands.iter().find(|b| b.band_type == BandType::Header);
-        let data_band = page.bands.iter().find(|b| b.band_type == BandType::DataBand);
-        let footer_band = page.bands.iter().find(|b| b.band_type == BandType::Footer);
-        let page_footer_band = page.bands.iter().find(|b| b.band_type == BandType::PageFooter);
-
-        let mut current_y_mm = page.margins.top;
-
-        // 1. Render Report Title Band
-        if let Some(band) = title_band {
-            for comp in &page.components {
-                if comp.parent_band_id.as_deref() == Some(&band.id) {
-                    let evaluated_text = Self::evaluate_expr(&comp.text, &vars_map, None);
-                    let mut rendered_comp = comp.clone();
-                    rendered_comp.text = evaluated_text;
-                    Self::draw_rendered_component(&painter, &rendered_comp, page_rect, mm_to_px, zoom);
-                }
-            }
-            current_y_mm = band.top + band.height + 2.0;
-        }
-
-        // 2. Render Header Band
-        if let Some(band) = header_band {
-            let dy = current_y_mm - band.top;
-            for comp in &page.components {
-                if comp.parent_band_id.as_deref() == Some(&band.id) {
-                    let mut rendered_comp = comp.clone();
-                    rendered_comp.rect.y += dy;
-                    Self::draw_rendered_component(&painter, &rendered_comp, page_rect, mm_to_px, zoom);
-                }
-            }
-            current_y_mm += band.height;
-        }
-
-        // 3. Render Data Band
-        if let Some(band) = data_band {
-            let active_ds = band.data_source.as_ref()
-                .and_then(|ds_name| app.report.dictionary.data_sources.iter().find(|d| &d.name == ds_name))
-                .or(default_ds);
-
-            let template_comps: Vec<&Component> = page.components.iter()
-                .filter(|c| c.parent_band_id.as_deref() == Some(&band.id))
-                .collect();
-
-            if let Some(ds) = active_ds {
-                if !ds.rows.is_empty() {
-                    for row_data in &ds.rows {
-                        for comp in &template_comps {
-                            let evaluated_text = Self::evaluate_expr(&comp.text, &vars_map, Some(row_data));
-                            let mut rendered_comp = (*comp).clone();
-                            rendered_comp.rect.y = current_y_mm + (comp.rect.y - band.top);
-                            rendered_comp.text = evaluated_text;
-                            Self::draw_rendered_component(&painter, &rendered_comp, page_rect, mm_to_px, zoom);
-                        }
-                        current_y_mm += band.height;
-                    }
-                } else {
-                    for comp in &template_comps {
-                        let evaluated_text = Self::evaluate_expr(&comp.text, &vars_map, None);
-                        let mut rendered_comp = (*comp).clone();
-                        rendered_comp.text = evaluated_text;
-                        Self::draw_rendered_component(&painter, &rendered_comp, page_rect, mm_to_px, zoom);
-                    }
-                    current_y_mm += band.height;
-                }
-            } else {
-                for comp in &template_comps {
-                    let evaluated_text = Self::evaluate_expr(&comp.text, &vars_map, None);
-                    let mut rendered_comp = (*comp).clone();
-                    rendered_comp.text = evaluated_text;
-                    Self::draw_rendered_component(&painter, &rendered_comp, page_rect, mm_to_px, zoom);
-                }
-                current_y_mm += band.height;
-            }
-        }
-
-        // 4. Render Footer Band
-        if let Some(band) = footer_band {
-            let dy = current_y_mm - band.top;
-            for comp in &page.components {
-                if comp.parent_band_id.as_deref() == Some(&band.id) {
-                    let mut rendered_comp = comp.clone();
-                    rendered_comp.rect.y += dy;
-                    Self::draw_rendered_component(&painter, &rendered_comp, page_rect, mm_to_px, zoom);
-                }
-            }
-        }
-
-        // 5. Render Page Footer Band
-        if let Some(band) = page_footer_band {
-            for comp in &page.components {
-                if comp.parent_band_id.as_deref() == Some(&band.id) {
-                    let evaluated_text = Self::evaluate_expr(&comp.text, &vars_map, None);
-                    let mut rendered_comp = comp.clone();
-                    rendered_comp.text = evaluated_text;
-                    Self::draw_rendered_component(&painter, &rendered_comp, page_rect, mm_to_px, zoom);
-                }
-            }
-        }
-
-        // 6. Standalone components (not in any band)
-        for comp in &page.components {
-            if comp.parent_band_id.is_none() {
-                let evaluated_text = Self::evaluate_expr(&comp.text, &vars_map, None);
-                let mut rendered_comp = comp.clone();
-                rendered_comp.text = evaluated_text;
-                Self::draw_rendered_component(&painter, &rendered_comp, page_rect, mm_to_px, zoom);
-            }
-        }
-    }
-
-    fn evaluate_expr(expr: &str, vars: &HashMap<String, String>, row: Option<&HashMap<String, String>>) -> String {
-        let mut result = expr.to_string();
-
-        if let Some(row_map) = row {
-            for (col_name, val) in row_map {
-                result = result.replace(&format!("{{{col_name}}}"), val);
-                // Also with table prefix like {Orders.col_name} or {employee.col_name}
-                for prefix in ["Orders", "employee", "detail", "root", "ijin_karyawan"] {
-                    result = result.replace(&format!("{{{prefix}.{col_name}}}"), val);
-                }
-            }
-        }
-
-        for (var_name, val) in vars {
-            result = result.replace(&format!("{{{var_name}}}"), val);
-        }
-
-        result
-    }
-
-    fn draw_rendered_component(
-        painter: &egui::Painter,
-        comp: &Component,
-        page_rect: Rect,
-        mm_to_px: f32,
-        zoom: f32,
-    ) {
-        let c_rect = Rect::from_min_size(
-            Pos2::new(page_rect.min.x + comp.rect.x * mm_to_px, page_rect.min.y + comp.rect.y * mm_to_px),
-            Vec2::new(comp.rect.w * mm_to_px, comp.rect.h * mm_to_px),
-        );
-
-        if comp.bg_color[3] > 0 {
-            let fill_c = Color32::from_rgba_premultiplied(comp.bg_color[0], comp.bg_color[1], comp.bg_color[2], comp.bg_color[3]);
-            painter.rect_filled(c_rect, 0.0, fill_c);
-        }
-
-        if comp.border_sides.has_any() {
-            let border_c = Color32::from_rgba_premultiplied(comp.border_color[0], comp.border_color[1], comp.border_color[2], comp.border_color[3]);
-            let stroke = Stroke::new((comp.border_width * mm_to_px).max(1.0), border_c);
-
-            if comp.border_sides.top { painter.line_segment([c_rect.left_top(), c_rect.right_top()], stroke); }
-            if comp.border_sides.bottom { painter.line_segment([c_rect.left_bottom(), c_rect.right_bottom()], stroke); }
-            if comp.border_sides.left { painter.line_segment([c_rect.left_top(), c_rect.left_bottom()], stroke); }
-            if comp.border_sides.right { painter.line_segment([c_rect.right_top(), c_rect.right_bottom()], stroke); }
-        }
-
-        match comp.comp_type {
-            ComponentType::Text => {
-                let tc = Color32::from_rgba_premultiplied(comp.text_color[0], comp.text_color[1], comp.text_color[2], comp.text_color[3]);
-                let font_size = (comp.font_size * 1.33 * zoom).max(8.0);
-                let font_id = egui::FontId::proportional(font_size);
-
-                let align2 = match (comp.align_h, comp.align_v) {
-                    (AlignH::Left, AlignV::Top) => egui::Align2::LEFT_TOP,
-                    (AlignH::Left, AlignV::Center) => egui::Align2::LEFT_CENTER,
-                    (AlignH::Left, AlignV::Bottom) => egui::Align2::LEFT_BOTTOM,
-                    (AlignH::Center, AlignV::Top) => egui::Align2::CENTER_TOP,
-                    (AlignH::Center, AlignV::Center) => egui::Align2::CENTER_CENTER,
-                    (AlignH::Center, AlignV::Bottom) => egui::Align2::CENTER_BOTTOM,
-                    (AlignH::Right, AlignV::Top) => egui::Align2::RIGHT_TOP,
-                    (AlignH::Right, AlignV::Center) => egui::Align2::RIGHT_CENTER,
-                    (AlignH::Right, AlignV::Bottom) => egui::Align2::RIGHT_BOTTOM,
-                    _ => egui::Align2::LEFT_CENTER,
+            for item in &sheet.items {
+                let eval = EvalContext {
+                    dictionary: &app.report.dictionary,
+                    row_index: &item.rows,
+                    vars: &sheet_vars,
                 };
-
-                let pos = match align2 {
-                    egui::Align2::LEFT_TOP => c_rect.left_top() + Vec2::new(3.0, 2.0),
-                    egui::Align2::LEFT_CENTER => c_rect.left_center() + Vec2::new(3.0, 0.0),
-                    egui::Align2::LEFT_BOTTOM => c_rect.left_bottom() + Vec2::new(3.0, -2.0),
-                    egui::Align2::CENTER_TOP => c_rect.center_top() + Vec2::new(0.0, 2.0),
-                    egui::Align2::CENTER_CENTER => c_rect.center(),
-                    egui::Align2::CENTER_BOTTOM => c_rect.center_bottom() + Vec2::new(0.0, -2.0),
-                    egui::Align2::RIGHT_TOP => c_rect.right_top() + Vec2::new(-3.0, 2.0),
-                    egui::Align2::RIGHT_CENTER => c_rect.right_center() + Vec2::new(-3.0, 0.0),
-                    egui::Align2::RIGHT_BOTTOM => c_rect.right_bottom() + Vec2::new(-3.0, -2.0),
-                };
-
-                painter.with_clip_rect(c_rect).text(pos, align2, &comp.text, font_id, tc);
-            }
-            ComponentType::Barcode => {
-                let bc_rect = c_rect.shrink(2.0);
-                let mut bx = bc_rect.min.x;
-                let bar_w = 2.0 * zoom;
-                let mut toggle = false;
-                while bx < bc_rect.max.x {
-                    if toggle {
-                        painter.rect_filled(
-                            Rect::from_min_max(Pos2::new(bx, bc_rect.min.y), Pos2::new(bx + bar_w, bc_rect.max.y - 11.0)),
-                            0.0,
-                            Color32::BLACK,
-                        );
-                    }
-                    bx += bar_w + (if (bx as usize) % 3 == 0 { 1.5 * bar_w } else { 0.5 * bar_w });
-                    toggle = !toggle;
+                let mut comp = item.comp.clone();
+                if matches!(comp.comp_type, ComponentType::Text | ComponentType::Barcode | ComponentType::CheckBox) {
+                    comp.text = eval.evaluate(&comp.text);
                 }
-                painter.text(bc_rect.center_bottom() + Vec2::new(0.0, -1.0), egui::Align2::CENTER_BOTTOM, &comp.text, egui::FontId::monospace(9.0 * zoom), Color32::BLACK);
+                draw_component(&painter, &comp, rect, mm_px, app.zoom);
             }
-            _ => {}
+
+            y += h_px + SHEET_GAP;
         }
     }
 
     fn export_html_dialog(app: &mut ReportDesignerApp) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("HTML Document (*.html)", &["html"])
+            .add_filter("HTML document (*.html)", &["html"])
             .set_file_name("report.html")
             .save_file()
         {
-            let html_content = Self::generate_html(app);
-            if let Err(e) = std::fs::write(&path, html_content) {
-                app.status_message = format!("Export failed: {e}");
-            } else {
-                app.status_message = format!("Exported HTML report to {}", path.display());
+            match std::fs::write(&path, sheets_to_html(app)) {
+                Ok(()) => app.status_message = format!("Exported HTML report to {}", path.display()),
+                Err(e) => app.status_message = format!("Export failed: {e}"),
             }
         }
     }
 
     fn export_text_dialog(app: &mut ReportDesignerApp) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Text File (*.txt)", &["txt"])
+            .add_filter("Text file (*.txt)", &["txt"])
             .set_file_name("report.txt")
             .save_file()
         {
-            let text_content = Self::generate_text(app);
-            if let Err(e) = std::fs::write(&path, text_content) {
-                app.status_message = format!("Export failed: {e}");
+            let text = plain_text(app);
+            match std::fs::write(&path, text) {
+                Ok(()) => app.status_message = format!("Exported text report to {}", path.display()),
+                Err(e) => app.status_message = format!("Export failed: {e}"),
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pagination: place every band of every page on sheets, repeating data bands per row
+// and starting a new sheet when a band would run into the page footer.
+// ---------------------------------------------------------------------------
+
+fn build_sheets(app: &ReportDesignerApp) -> Vec<Sheet> {
+    let mut sheets = Vec::new();
+    for (pi, page) in app.report.pages.iter().enumerate() {
+        sheets.extend(paginate(app, pi, page));
+    }
+    sheets
+}
+
+fn paginate(app: &ReportDesignerApp, pi: usize, page: &Page) -> Vec<Sheet> {
+    let dict = &app.report.dictionary;
+    let (_, ph) = page.effective_dimensions();
+    let find = |t: BandType| page.bands.iter().find(|b| b.band_type == t);
+    let page_header = find(BandType::PageHeader);
+    let page_footer = find(BandType::PageFooter);
+    let footer_h = page_footer.map_or(0.0, |b| b.height);
+
+    let mut flow = Flow {
+        page,
+        pi,
+        top: page.margins.top,
+        header: page_header,
+        header_h: page_header.map_or(0.0, |b| b.height),
+        limit: ph - page.margins.bottom - footer_h,
+        sheets: Vec::new(),
+        items: Vec::new(),
+        y: page.margins.top,
+        body: false,
+    };
+    flow.new_sheet();
+
+    // Components outside any band print once, on the first sheet of the page.
+    for c in page.components.iter().filter(|c| c.parent_band_id.is_none()) {
+        flow.items.push(Item { comp: c.clone(), rows: HashMap::new() });
+    }
+
+    let mut bands: Vec<&Band> = page.bands.iter().collect();
+    bands.sort_by(|a, b| a.top.partial_cmp(&b.top).unwrap_or(Ordering::Equal));
+    let none = HashMap::new();
+
+    for band in bands {
+        match band.band_type {
+            BandType::PageHeader | BandType::PageFooter => {}
+            BandType::DataBand => {
+                let source = band
+                    .data_source
+                    .as_ref()
+                    .and_then(|name| dict.data_sources.iter().find(|d| &d.name == name));
+                match source {
+                    Some(ds) if !ds.rows.is_empty() => {
+                        for i in 0..ds.rows.len() {
+                            let rows = HashMap::from([(ds.name.clone(), i)]);
+                            flow.flow(band, &rows);
+                        }
+                    }
+                    // A band with no data source prints once; an empty source prints the layout once.
+                    _ => flow.flow(band, &none),
+                }
+            }
+            _ => flow.flow(band, &none),
+        }
+    }
+
+    flow.finish(page_footer)
+}
+
+struct Flow<'a> {
+    page: &'a Page,
+    pi: usize,
+    top: f32,
+    header: Option<&'a Band>,
+    header_h: f32,
+    /// Lowest y (mm) that body bands may reach on a sheet.
+    limit: f32,
+    sheets: Vec<Sheet>,
+    items: Vec<Item>,
+    /// Next free y (mm) for body bands on the current sheet.
+    y: f32,
+    /// True once a body band has been placed on the current sheet.
+    body: bool,
+}
+
+impl<'a> Flow<'a> {
+    fn new_sheet(&mut self) {
+        if !self.items.is_empty() {
+            let items = std::mem::take(&mut self.items);
+            self.sheets.push(Sheet { page_idx: self.pi, items });
+        }
+        if let Some(h) = self.header {
+            place_into(self.page, h, self.top, &HashMap::new(), &mut self.items);
+        }
+        self.y = self.top + self.header_h;
+        self.body = false;
+    }
+
+    fn flow(&mut self, band: &Band, rows: &HashMap<String, usize>) {
+        if self.body && self.y + band.height > self.limit {
+            self.new_sheet();
+        }
+        place_into(self.page, band, self.y, rows, &mut self.items);
+        self.y += band.height;
+        self.body = true;
+    }
+
+    fn finish(mut self, page_footer: Option<&Band>) -> Vec<Sheet> {
+        if let Some(pf) = page_footer {
+            let none = HashMap::new();
+            for sheet in &mut self.sheets {
+                place_into(self.page, pf, self.limit, &none, &mut sheet.items);
+            }
+            place_into(self.page, pf, self.limit, &none, &mut self.items);
+        }
+        let items = std::mem::take(&mut self.items);
+        self.sheets.push(Sheet { page_idx: self.pi, items });
+        self.sheets
+    }
+}
+
+/// Copies the components of `band` into `items`, moved so the band starts at `y`.
+fn place_into(page: &Page, band: &Band, y: f32, rows: &HashMap<String, usize>, items: &mut Vec<Item>) {
+    let dy = y - band.top;
+    for c in page.components.iter().filter(|c| c.parent_band_id.as_deref() == Some(band.id.as_str())) {
+        let mut comp = c.clone();
+        comp.rect.y += dy;
+        items.push(Item { comp, rows: rows.clone() });
+    }
+}
+
+fn page_size(app: &ReportDesignerApp, sheet: &Sheet) -> (f32, f32) {
+    app.report.pages[sheet.page_idx].effective_dimensions()
+}
+
+// ---------------------------------------------------------------------------
+// Drawing
+// ---------------------------------------------------------------------------
+
+fn draw_paper(painter: &egui::Painter, rect: Rect) {
+    painter.rect_filled(rect.translate(Vec2::new(0.0, 2.0)).expand(1.0), 2.0, Color32::from_black_alpha(28));
+    painter.rect_filled(rect, 0.0, PAPER);
+    painter.rect_stroke(rect, 0.0, Stroke::new(1.0_f32, RULE));
+}
+
+fn draw_component(painter: &egui::Painter, comp: &Component, page_rect: Rect, mm_px: f32, zoom: f32) {
+    let c_rect = Rect::from_min_size(
+        Pos2::new(page_rect.min.x + comp.rect.x * mm_px, page_rect.min.y + comp.rect.y * mm_px),
+        Vec2::new(comp.rect.w * mm_px, comp.rect.h * mm_px),
+    );
+    let color = |c: [u8; 4]| Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]);
+
+    if comp.bg_color[3] > 0 {
+        painter.rect_filled(c_rect, 0.0, color(comp.bg_color));
+    }
+    if comp.border_sides.has_any() {
+        let stroke = Stroke::new((comp.border_width * mm_px).max(1.0), color(comp.border_color));
+        let s = &comp.border_sides;
+        if s.top { painter.line_segment([c_rect.left_top(), c_rect.right_top()], stroke); }
+        if s.bottom { painter.line_segment([c_rect.left_bottom(), c_rect.right_bottom()], stroke); }
+        if s.left { painter.line_segment([c_rect.left_top(), c_rect.left_bottom()], stroke); }
+        if s.right { painter.line_segment([c_rect.right_top(), c_rect.right_bottom()], stroke); }
+    }
+
+    match comp.comp_type {
+        ComponentType::Text => {
+            rt::draw(painter, comp, &comp.text, c_rect, rt::px_per_pt(zoom));
+        }
+        ComponentType::Barcode => {
+            let bc_rect = c_rect.shrink(2.0);
+            let bar_w = 2.0 * zoom;
+            let mut bx = bc_rect.min.x;
+            let mut dark = false;
+            while bx < bc_rect.max.x {
+                if dark {
+                    painter.rect_filled(
+                        Rect::from_min_max(Pos2::new(bx, bc_rect.min.y), Pos2::new(bx + bar_w, bc_rect.max.y - 11.0)),
+                        0.0,
+                        Color32::BLACK,
+                    );
+                }
+                bx += bar_w + if (bx as usize) % 3 == 0 { 1.5 * bar_w } else { 0.5 * bar_w };
+                dark = !dark;
+            }
+            painter.text(
+                bc_rect.center_bottom() + Vec2::new(0.0, -1.0),
+                egui::Align2::CENTER_BOTTOM,
+                &comp.text,
+                egui::FontId::monospace(9.0 * zoom),
+                Color32::BLACK,
+            );
+        }
+        ComponentType::Line => {
+            let w = (comp.border_width * mm_px).max(1.5);
+            let (a, b) = if c_rect.width() < c_rect.height() {
+                (c_rect.center_top(), c_rect.center_bottom())
             } else {
-                app.status_message = format!("Exported Text report to {}", path.display());
-            }
+                (c_rect.left_center(), c_rect.right_center())
+            };
+            painter.line_segment([a, b], Stroke::new(w, color(comp.border_color)));
         }
-    }
-
-    fn generate_html(app: &ReportDesignerApp) -> String {
-        let mut html = String::from("<!DOCTYPE html><html><head><meta charset='utf-8'><title>Report</title><style>");
-        html.push_str("body{font-family:Arial,sans-serif;margin:40px;background:#f5f5f5;}");
-        html.push_str(".page{background:white;padding:30px;max-width:800px;margin:0 auto;box-shadow:0 2px 8px rgba(0,0,0,0.1);}");
-        html.push_str("table{width:100%;border-collapse:collapse;margin:20px 0;}");
-        html.push_str("th{background:#2980b9;color:white;padding:8px;text-align:left;}");
-        html.push_str("td{padding:8px;border-bottom:1px solid #ddd;}");
-        html.push_str("</style></head><body><div class='page'>");
-        html.push_str(&format!("<h1>{}</h1>", app.report.name));
-
-        if let Some(ds) = app.report.dictionary.data_sources.first() {
-            html.push_str("<table><thead><tr>");
-            for col in &ds.columns {
-                html.push_str(&format!("<th>{}</th>", col.name));
-            }
-            html.push_str("</tr></thead><tbody>");
-
-            let empty = String::new();
-            for row in &ds.rows {
-                html.push_str("<tr>");
-                for col in &ds.columns {
-                    html.push_str(&format!("<td>{}</td>", row.get(&col.name).unwrap_or(&empty)));
+        ComponentType::Shape => {
+            let fill = color(comp.bg_color);
+            let stroke = Stroke::new((comp.border_width * mm_px).max(1.0), color(comp.border_color));
+            match comp.shape_kind {
+                ShapeKind::Rectangle => {
+                    painter.rect(c_rect, 0.0, fill, stroke);
                 }
-                html.push_str("</tr>");
-            }
-            html.push_str("</tbody></table>");
-        }
-
-        html.push_str("</div></body></html>");
-        html
-    }
-
-    fn generate_text(app: &ReportDesignerApp) -> String {
-        let mut txt = String::new();
-        txt.push_str(&format!("========================================================================================\n"));
-        txt.push_str(&format!("                                   {}\n", app.report.name.to_uppercase()));
-        txt.push_str(&format!("========================================================================================\n"));
-
-        if let Some(ds) = app.report.dictionary.data_sources.first() {
-            for col in &ds.columns {
-                txt.push_str(&format!("{:<15} ", col.name));
-            }
-            txt.push_str("\n----------------------------------------------------------------------------------------\n");
-
-            let empty = String::new();
-            for row in &ds.rows {
-                for col in &ds.columns {
-                    let val = row.get(&col.name).unwrap_or(&empty);
-                    txt.push_str(&format!("{:<15} ", val));
+                ShapeKind::RoundedRectangle => {
+                    painter.rect(c_rect, 6.0 * zoom, fill, stroke);
                 }
-                txt.push_str("\n");
+                ShapeKind::Ellipse => {
+                    painter.circle(c_rect.center(), c_rect.width().min(c_rect.height()) * 0.5, fill, stroke);
+                }
+                ShapeKind::Triangle => {
+                    let points = vec![c_rect.center_top(), c_rect.right_bottom(), c_rect.left_bottom()];
+                    painter.add(egui::Shape::convex_polygon(points, fill, stroke));
+                }
             }
         }
-        txt.push_str("========================================================================================\n");
-        txt
+        ComponentType::CheckBox => {
+            let side = c_rect.height().min(4.0 * mm_px);
+            let box_rect = Rect::from_min_size(
+                Pos2::new(c_rect.left(), c_rect.center().y - side / 2.0),
+                Vec2::splat(side),
+            );
+            painter.rect(box_rect, 1.0, Color32::WHITE, Stroke::new(1.0_f32, Color32::BLACK));
+            if comp.checked {
+                let p = |x: f32, y: f32| box_rect.min + Vec2::new(x * side, y * side);
+                let stroke = Stroke::new((side * 0.12).max(1.0), Color32::BLACK);
+                painter.line_segment([p(0.2, 0.5), p(0.42, 0.75)], stroke);
+                painter.line_segment([p(0.42, 0.75), p(0.82, 0.25)], stroke);
+            }
+            let text_rect = Rect::from_min_max(Pos2::new(box_rect.right() + 3.0, c_rect.top()), c_rect.max);
+            rt::draw(painter, &comp_as_text(comp), &comp.text, text_rect, rt::px_per_pt(zoom));
+        }
+        // Images and tables cannot be rendered yet; they keep their place on the page.
+        ComponentType::Image | ComponentType::Table => {}
     }
+}
+
+/// A copy of the component with left alignment, for text placed beside a checkbox.
+fn comp_as_text(comp: &Component) -> Component {
+    let mut c = comp.clone();
+    c.align_h = AlignH::Left;
+    c.align_v = AlignV::Center;
+    c.word_wrap = false;
+    c
+}
+
+// ---------------------------------------------------------------------------
+// Values shown in the preview
+// ---------------------------------------------------------------------------
+
+fn base_vars(app: &ReportDesignerApp) -> HashMap<String, String> {
+    let mut vars = HashMap::new();
+    for v in &app.report.dictionary.variables {
+        vars.insert(v.name.clone(), v.value.clone());
+    }
+    let (y, m, d) = today();
+    let today_text = format!("{d:02}/{m:02}/{y}");
+    vars.insert("Today".to_string(), today_text.clone());
+    vars.insert("Date".to_string(), today_text);
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|x| x.as_secs()).unwrap_or(0) % 86_400;
+    vars.insert("Time".to_string(), format!("{:02}:{:02}", secs / 3600, (secs % 3600) / 60));
+    vars
+}
+
+/// Today's date (UTC) as (year, month, day). Std only, so no time zone.
+fn today() -> (i64, u32, u32) {
+    let days = SystemTime::now().duration_since(UNIX_EPOCH).map(|x| x.as_secs() / 86_400).unwrap_or(0) as i64;
+    // Civil-from-days (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
+    (y, m, d)
+}
+
+// ---------------------------------------------------------------------------
+// Exports
+// ---------------------------------------------------------------------------
+
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn css_color(c: [u8; 4]) -> String {
+    format!("rgba({},{},{},{:.3})", c[0], c[1], c[2], c[3] as f32 / 255.0)
+}
+
+/// The text of one component as HTML: runs with their styles when HTML tags are allowed,
+/// otherwise the escaped text. Line breaks become <br>.
+fn text_html(comp: &Component, text: &str) -> String {
+    let runs = parse_runs(text, comp.allow_html_tags);
+    let mut out = String::new();
+    for run in runs {
+        let mut style = String::new();
+        if run.bold || comp.bold {
+            style.push_str("font-weight:bold;");
+        }
+        if run.italic || comp.italic {
+            style.push_str("font-style:italic;");
+        }
+        if run.underline || comp.underline {
+            style.push_str("text-decoration:underline;");
+        }
+        if let Some(c) = run.color {
+            style.push_str(&format!("color:{};", css_color(c)));
+        }
+        let size = run.size_pt.unwrap_or(comp.font_size * run.size_scale);
+        style.push_str(&format!("font-size:{size:.2}pt;"));
+        let body = escape_html(&run.text).replace('\n', "<br>");
+        out.push_str(&format!("<span style=\"{style}\">{body}</span>"));
+    }
+    out
+}
+
+fn sheets_to_html(app: &ReportDesignerApp) -> String {
+    let sheets = build_sheets(app);
+    let total = sheets.len();
+    let vars = base_vars(app);
+    let title = escape_html(&app.report.alias);
+
+    let mut html = format!(
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>{title}</title><style>\
+         body{{margin:0;padding:24px;background:#f1f3f4;font-family:'Segoe UI',Arial,sans-serif}}\
+         .sheet{{position:relative;background:#fff;margin:0 auto 24px;box-shadow:0 1px 4px rgba(0,0,0,.25);overflow:hidden}}\
+         .item{{position:absolute;box-sizing:border-box;overflow:hidden;white-space:normal;line-height:1.2}}\
+         </style></head><body>"
+    );
+
+    for (n, sheet) in sheets.iter().enumerate() {
+        let (pw, ph) = page_size(app, sheet);
+        html.push_str(&format!("<div class=\"sheet\" style=\"width:{pw:.2}mm;height:{ph:.2}mm\">"));
+
+        let mut sheet_vars = vars.clone();
+        sheet_vars.insert("PageNumber".to_string(), (n + 1).to_string());
+        sheet_vars.insert("TotalPageCount".to_string(), total.to_string());
+
+        for item in &sheet.items {
+            let comp = &item.comp;
+            let eval = EvalContext {
+                dictionary: &app.report.dictionary,
+                row_index: &item.rows,
+                vars: &sheet_vars,
+            };
+            let text = if matches!(comp.comp_type, ComponentType::Text | ComponentType::Barcode | ComponentType::CheckBox) {
+                eval.evaluate(&comp.text)
+            } else {
+                String::new()
+            };
+
+            let mut style = format!(
+                "left:{:.2}mm;top:{:.2}mm;width:{:.2}mm;height:{:.2}mm;",
+                comp.rect.x, comp.rect.y, comp.rect.w, comp.rect.h
+            );
+            if comp.bg_color[3] > 0 {
+                style.push_str(&format!("background:{};", css_color(comp.bg_color)));
+            }
+            let border = format!("{:.2}mm solid {}", comp.border_width, css_color(comp.border_color));
+            let s = &comp.border_sides;
+            if s.top { style.push_str(&format!("border-top:{border};")); }
+            if s.bottom { style.push_str(&format!("border-bottom:{border};")); }
+            if s.left { style.push_str(&format!("border-left:{border};")); }
+            if s.right { style.push_str(&format!("border-right:{border};")); }
+            style.push_str(&format!("color:{};", css_color(comp.text_color)));
+            style.push_str(match comp.align_h {
+                AlignH::Center => "text-align:center;",
+                AlignH::Right => "text-align:right;",
+                _ => "text-align:left;",
+            });
+            style.push_str(match comp.align_v {
+                AlignV::Center => "display:flex;flex-direction:column;justify-content:center;",
+                AlignV::Bottom => "display:flex;flex-direction:column;justify-content:flex-end;",
+                _ => "",
+            });
+
+            let inner = match comp.comp_type {
+                ComponentType::Text => text_html(comp, &text),
+                ComponentType::Barcode => escape_html(&text),
+                ComponentType::CheckBox => format!("{} {}", if comp.checked { "[x]" } else { "[ ]" }, text_html(comp, &text)),
+                _ => String::new(),
+            };
+            if matches!(comp.comp_type, ComponentType::Shape) && comp.shape_kind == ShapeKind::Ellipse {
+                style.push_str("border-radius:50%;");
+            }
+            html.push_str(&format!("<div class=\"item\" style=\"{style}\">{inner}</div>"));
+        }
+        html.push_str("</div>");
+    }
+
+    html.push_str("</body></html>");
+    html
+}
+
+fn plain_text(app: &ReportDesignerApp) -> String {
+    let mut txt = String::new();
+    let rule = "=".repeat(88);
+    txt.push_str(&format!("{rule}\n{}\n{rule}\n", app.report.alias.to_uppercase()));
+    if let Some(ds) = app.report.dictionary.data_sources.first() {
+        for col in &ds.columns {
+            txt.push_str(&format!("{:<15} ", col.name));
+        }
+        txt.push('\n');
+        for row in &ds.rows {
+            for col in &ds.columns {
+                let val = row.get(&col.name).cloned().unwrap_or_default();
+                txt.push_str(&format!("{:<15} ", val));
+            }
+            txt.push('\n');
+        }
+    }
+    txt.push_str(&rule);
+    txt.push('\n');
+    txt
 }

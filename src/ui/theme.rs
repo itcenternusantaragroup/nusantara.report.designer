@@ -7,23 +7,25 @@ use std::sync::Arc;
 use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, Rounding, Stroke, Vec2, Visuals};
 
 /// Canvas background behind the page.
-pub const DESK: Color32 = Color32::from_rgb(0xE4, 0xE7, 0xEC);
+pub const DESK: Color32 = Color32::from_rgb(0xF1, 0xF3, 0xF4);
 /// The page itself.
 pub const PAPER: Color32 = Color32::WHITE;
 /// Ribbon, status bar, rulers.
-pub const CHROME: Color32 = Color32::from_rgb(0xF4, 0xF5, 0xF7);
+pub const CHROME: Color32 = Color32::from_rgb(0xF8, 0xF9, 0xFA);
+/// Toolbar strip under the menu bar.
+pub const TOOLBAR: Color32 = Color32::from_rgb(0xED, 0xF2, 0xFA);
 /// Side panels.
-pub const PANEL: Color32 = Color32::from_rgb(0xFA, 0xFB, 0xFC);
+pub const PANEL: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
 /// Hairlines and borders.
-pub const RULE: Color32 = Color32::from_rgb(0xD6, 0xDB, 0xE2);
+pub const RULE: Color32 = Color32::from_rgb(0xDA, 0xDC, 0xE0);
 /// Primary text.
-pub const INK: Color32 = Color32::from_rgb(0x1C, 0x21, 0x29);
+pub const INK: Color32 = Color32::from_rgb(0x20, 0x21, 0x24);
 /// Secondary text, captions, ticks.
-pub const MUTED: Color32 = Color32::from_rgb(0x6A, 0x72, 0x7F);
+pub const MUTED: Color32 = Color32::from_rgb(0x5F, 0x63, 0x68);
 /// The single accent colour.
-pub const ACCENT: Color32 = Color32::from_rgb(0x2B, 0x59, 0xC3);
+pub const ACCENT: Color32 = Color32::from_rgb(0x1A, 0x73, 0xE8);
 /// Accent tint for selected rows and segmented controls.
-pub const ACCENT_SOFT: Color32 = Color32::from_rgb(0xE4, 0xEB, 0xF9);
+pub const ACCENT_SOFT: Color32 = Color32::from_rgb(0xD3, 0xE3, 0xFD);
 
 /// Installs fonts and visuals. Call once when the app is created.
 pub fn apply(ctx: &egui::Context) {
@@ -100,6 +102,17 @@ fn install_fonts(ctx: &egui::Context) {
             break;
         }
     }
+    // A separate "bold" family for <b> text. Falls back to the regular list when Segoe UI Bold is missing.
+    let regular = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+    let mut bold = regular;
+    if let Ok(bytes) = std::fs::read(r"C:\Windows\Fonts\segoeuib.ttf") {
+        fonts
+            .font_data
+            .insert("system_bold".to_owned(), Arc::new(FontData::from_owned(bytes)));
+        bold.insert(0, "system_bold".to_owned());
+    }
+    fonts.families.insert(FontFamily::Name("bold".into()), bold);
+
     ctx.set_fonts(fonts);
 }
 

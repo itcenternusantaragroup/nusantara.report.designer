@@ -6,7 +6,7 @@ use std::f32::consts::PI;
 
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 
-use super::theme::{ACCENT, ACCENT_SOFT, CHROME, INK, MUTED, PAPER, RULE};
+use super::theme::{self, ACCENT, ACCENT_SOFT, CHROME, INK, MUTED, PAPER, RULE};
 
 /// Text and icon colour for disabled controls.
 pub const DISABLED: Color32 = Color32::from_rgb(0xB4, 0xBA, 0xC3);
@@ -36,6 +36,14 @@ pub enum Icon {
     Design,
     Preview,
     Code,
+    AlignLeft,
+    AlignCenter,
+    AlignRight,
+    ChevronDown,
+    Plus,
+    TextColor,
+    FillColor,
+    Outline,
 }
 
 /// Paints `icon` inside `rect` using `color`.
@@ -170,6 +178,43 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&down, false);
             painter.circle_stroke(m(8.0, 8.0), 2.0 * k, stroke);
         }
+        Icon::AlignLeft => {
+            line(&[(2.0, 4.0), (14.0, 4.0)], false);
+            line(&[(2.0, 7.5), (10.0, 7.5)], false);
+            line(&[(2.0, 11.0), (14.0, 11.0)], false);
+            line(&[(2.0, 14.5), (8.0, 14.5)], false);
+        }
+        Icon::AlignCenter => {
+            line(&[(2.0, 4.0), (14.0, 4.0)], false);
+            line(&[(4.0, 7.5), (12.0, 7.5)], false);
+            line(&[(2.0, 11.0), (14.0, 11.0)], false);
+            line(&[(5.0, 14.5), (11.0, 14.5)], false);
+        }
+        Icon::AlignRight => {
+            line(&[(2.0, 4.0), (14.0, 4.0)], false);
+            line(&[(6.0, 7.5), (14.0, 7.5)], false);
+            line(&[(2.0, 11.0), (14.0, 11.0)], false);
+            line(&[(8.0, 14.5), (14.0, 14.5)], false);
+        }
+        Icon::ChevronDown => {
+            line(&[(4.0, 6.0), (8.0, 10.0), (12.0, 6.0)], false);
+        }
+        Icon::Plus => {
+            line(&[(8.0, 3.0), (8.0, 13.0)], false);
+            line(&[(3.0, 8.0), (13.0, 8.0)], false);
+        }
+        Icon::TextColor => {
+            line(&[(3.0, 12.0), (8.0, 2.5), (13.0, 12.0)], false);
+            line(&[(5.0, 8.5), (11.0, 8.5)], false);
+            filled(2.0, 13.8, 14.0, 15.5, color);
+        }
+        Icon::FillColor => {
+            line(&[(4.0, 7.0), (8.5, 2.5), (13.0, 7.0), (8.5, 11.5)], true);
+            filled(2.0, 13.8, 14.0, 15.5, color);
+        }
+        Icon::Outline => {
+            rr(2.5, 2.5, 13.5, 13.5);
+        }
         Icon::Code => {
             line(&[(5.0, 4.0), (1.5, 8.0), (5.0, 12.0)], false);
             line(&[(11.0, 4.0), (14.5, 8.0), (11.0, 12.0)], false);
@@ -254,6 +299,140 @@ pub fn row(ui: &mut egui::Ui, icon: Option<Icon>, text: &str, selected: bool) ->
         painter.galley(Pos2::new(x, y), galley, color);
     }
     resp
+}
+
+/// Icon colour in the toolbar and menus.
+pub const ICON: Color32 = Color32::from_rgb(0x44, 0x47, 0x46);
+const HOVER: Color32 = Color32::from_rgb(0xE8, 0xEA, 0xED);
+
+/// Round icon button used in the toolbar. `tip` shows on hover.
+pub fn button(ui: &mut egui::Ui, icon: Icon, tip: &str, enabled: bool, selected: bool) -> egui::Response {
+    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(32.0), sense);
+    if ui.is_rect_visible(rect) {
+        let hovered = enabled && resp.hovered();
+        let fill = if selected {
+            theme::ACCENT_SOFT
+        } else if hovered {
+            HOVER
+        } else {
+            Color32::TRANSPARENT
+        };
+        let color = if !enabled {
+            DISABLED
+        } else if selected {
+            ACCENT
+        } else {
+            ICON
+        };
+        let painter = ui.painter();
+        painter.rect_filled(rect, 16.0, fill);
+        paint(painter, Rect::from_center_size(rect.center(), Vec2::splat(18.0)), icon, color);
+    }
+    resp.on_hover_text(tip)
+}
+
+/// Round letter button (B, I, U) for text styles.
+pub fn letter_button(ui: &mut egui::Ui, letter: &str, tip: &str, enabled: bool, selected: bool, underline: bool) -> egui::Response {
+    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(32.0), sense);
+    if ui.is_rect_visible(rect) {
+        let hovered = enabled && resp.hovered();
+        let fill = if selected {
+            theme::ACCENT_SOFT
+        } else if hovered {
+            HOVER
+        } else {
+            Color32::TRANSPARENT
+        };
+        let color = if !enabled {
+            DISABLED
+        } else if selected {
+            ACCENT
+        } else {
+            ICON
+        };
+        let painter = ui.painter();
+        painter.rect_filled(rect, 16.0, fill);
+        let font = egui::FontId::proportional(15.0);
+        // Faux bold: draw twice with a small horizontal offset.
+        painter.text(rect.center(), egui::Align2::CENTER_CENTER, letter, font.clone(), color);
+        if underline {
+            painter.line_segment(
+                [rect.center() + Vec2::new(-5.0, 8.0), rect.center() + Vec2::new(5.0, 8.0)],
+                Stroke::new(1.0_f32, color),
+            );
+        }
+    }
+    resp.on_hover_text(tip)
+}
+
+/// Filled blue pill button, for the main action.
+pub fn primary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), egui::FontId::proportional(13.0), Color32::WHITE);
+    let size = Vec2::new(galley.size().x + 36.0, 32.0);
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    if ui.is_rect_visible(rect) {
+        let fill = if resp.hovered() {
+            Color32::from_rgb(0x18, 0x63, 0xC9)
+        } else {
+            ACCENT
+        };
+        let painter = ui.painter();
+        painter.rect_filled(rect, 16.0, fill);
+        painter.galley(rect.center() - galley.size() / 2.0, galley, Color32::WHITE);
+    }
+    resp
+}
+
+/// Underlined text tab. Returns true when clicked.
+pub fn text_tab(ui: &mut egui::Ui, active: bool, label: &str) -> bool {
+    let mut text = egui::RichText::new(label).color(if active { ACCENT } else { MUTED });
+    if active {
+        text = text.strong();
+    }
+    let resp = ui.add(egui::Button::new(text).frame(false));
+    if active {
+        let r = resp.rect;
+        ui.painter().line_segment(
+            [egui::pos2(r.min.x + 4.0, r.max.y + 2.0), egui::pos2(r.max.x - 4.0, r.max.y + 2.0)],
+            Stroke::new(2.0_f32, ACCENT),
+        );
+    }
+    resp.clicked()
+}
+
+/// Menu-bar label (File, Edit, ...) that opens a dropdown. Looks like plain text until hovered.
+pub fn menu(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
+    ui.scope(|ui| {
+        let v = &mut ui.style_mut().visuals;
+        for w in [&mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.open] {
+            w.bg_fill = Color32::TRANSPARENT;
+            w.weak_bg_fill = Color32::TRANSPARENT;
+            w.bg_stroke = Stroke::NONE;
+        }
+        v.widgets.hovered.weak_bg_fill = HOVER;
+        v.widgets.hovered.bg_fill = HOVER;
+        v.widgets.open.weak_bg_fill = HOVER;
+        v.widgets.open.bg_fill = HOVER;
+        ui.menu_button(egui::RichText::new(label).size(13.0).color(theme::INK), add);
+    });
+}
+
+/// Draws the app mark: an accent rounded square with a white page.
+pub fn logo(painter: &Painter, rect: Rect) {
+    painter.rect_filled(rect, 7.0, ACCENT);
+    let page = Rect::from_center_size(rect.center(), rect.size() * 0.52);
+    painter.rect_filled(page, 1.5, Color32::WHITE);
+    for i in 0..3 {
+        let y = page.min.y + page.height() * (0.35 + 0.2 * i as f32);
+        painter.line_segment(
+            [egui::pos2(page.min.x + 3.0, y), egui::pos2(page.max.x - 3.0, y)],
+            Stroke::new(1.2_f32, ACCENT),
+        );
+    }
 }
 
 /// The application icon: a white page on the accent colour, with three text lines.

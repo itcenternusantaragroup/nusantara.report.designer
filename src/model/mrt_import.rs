@@ -86,6 +86,15 @@ fn unit_factor(unit: Option<&str>) -> f32 {
     }
 }
 
+/// A yes/no property stored as a JSON bool or as text ("True" in XML).
+fn flag_of(v: &Value, key: &str) -> bool {
+    match v.get(key) {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::String(s)) => s.trim().eq_ignore_ascii_case("true"),
+        _ => false,
+    }
+}
+
 fn str_of<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(|x| x.as_str()).unwrap_or("")
 }
@@ -116,7 +125,7 @@ fn parse_rect(v: Option<&Value>, unit: f32) -> RectMm {
 // ---------------------------------------------------------------------------
 
 /// Common .NET / CSS colour names used in Stimulsoft files.
-fn named_color(name: &str) -> Option<[u8; 4]> {
+pub fn named_color(name: &str) -> Option<[u8; 4]> {
     let rgb: [u8; 3] = match name.to_ascii_lowercase().as_str() {
         "black" => [0, 0, 0],
         "white" => [255, 255, 255],
@@ -592,6 +601,7 @@ fn parse_component(cv: &Value, unit: f32) -> Option<Component> {
     if let Some(checked) = cv.get("Checked").and_then(|x| x.as_bool()) {
         comp.checked = checked;
     }
+    comp.allow_html_tags = flag_of(cv, "AllowHtmlTags");
     Some(comp)
 }
 

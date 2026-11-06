@@ -176,38 +176,7 @@ impl CanvasView {
             // Draw Content by Type
             match comp.comp_type {
                 ComponentType::Text => {
-                    let tc = Color32::from_rgba_premultiplied(comp.text_color[0], comp.text_color[1], comp.text_color[2], comp.text_color[3]);
-                    let font_size_px = (comp.font_size * 1.33 * zoom).max(8.0);
-                    let font_id = egui::FontId::proportional(font_size_px);
-
-                    let align2 = match (comp.align_h, comp.align_v) {
-                        (AlignH::Left, AlignV::Top) => egui::Align2::LEFT_TOP,
-                        (AlignH::Left, AlignV::Center) => egui::Align2::LEFT_CENTER,
-                        (AlignH::Left, AlignV::Bottom) => egui::Align2::LEFT_BOTTOM,
-                        (AlignH::Center, AlignV::Top) => egui::Align2::CENTER_TOP,
-                        (AlignH::Center, AlignV::Center) => egui::Align2::CENTER_CENTER,
-                        (AlignH::Center, AlignV::Bottom) => egui::Align2::CENTER_BOTTOM,
-                        (AlignH::Right, AlignV::Top) => egui::Align2::RIGHT_TOP,
-                        (AlignH::Right, AlignV::Center) => egui::Align2::RIGHT_CENTER,
-                        (AlignH::Right, AlignV::Bottom) => egui::Align2::RIGHT_BOTTOM,
-                        (AlignH::Justify, AlignV::Center) => egui::Align2::LEFT_CENTER,
-                        (AlignH::Justify, AlignV::Top) => egui::Align2::LEFT_TOP,
-                        (AlignH::Justify, AlignV::Bottom) => egui::Align2::LEFT_BOTTOM,
-                    };
-
-                    let text_pos = match align2 {
-                        egui::Align2::LEFT_TOP => c_rect.left_top() + Vec2::new(2.0, 2.0),
-                        egui::Align2::LEFT_CENTER => c_rect.left_center() + Vec2::new(2.0, 0.0),
-                        egui::Align2::LEFT_BOTTOM => c_rect.left_bottom() + Vec2::new(2.0, -2.0),
-                        egui::Align2::CENTER_TOP => c_rect.center_top() + Vec2::new(0.0, 2.0),
-                        egui::Align2::CENTER_CENTER => c_rect.center(),
-                        egui::Align2::CENTER_BOTTOM => c_rect.center_bottom() + Vec2::new(0.0, -2.0),
-                        egui::Align2::RIGHT_TOP => c_rect.right_top() + Vec2::new(-2.0, 2.0),
-                        egui::Align2::RIGHT_CENTER => c_rect.right_center() + Vec2::new(-2.0, 0.0),
-                        egui::Align2::RIGHT_BOTTOM => c_rect.right_bottom() + Vec2::new(-2.0, -2.0),
-                    };
-
-                    painter.with_clip_rect(c_rect).text(text_pos, align2, &comp.text, font_id, tc);
+                    super::richtext::draw(&painter, comp, &comp.text, c_rect, super::richtext::px_per_pt(zoom));
                 }
                 ComponentType::Barcode => {
                     let bc_rect = c_rect.shrink(2.0);

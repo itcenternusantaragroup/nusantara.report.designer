@@ -226,6 +226,8 @@ pub struct Component {
     pub shape_kind: ShapeKind,
     pub barcode_format: String,
     pub checked: bool,
+    /// Read the text as HTML (b, i, u, font, span, br ...). Off: the text is shown as written.
+    pub allow_html_tags: bool,
     pub parent_band_id: Option<String>,
 }
 
@@ -253,6 +255,7 @@ impl Default for Component {
             shape_kind: ShapeKind::Rectangle,
             barcode_format: "Code128".to_string(),
             checked: false,
+            allow_html_tags: false,
             parent_band_id: None,
         }
     }
@@ -381,6 +384,7 @@ impl Default for Report {
             shape_kind: ShapeKind::Rectangle,
             barcode_format: "Code128".to_string(),
             checked: false,
+            allow_html_tags: false,
             parent_band_id: Some("band_report_title".to_string()),
         };
 
@@ -406,6 +410,7 @@ impl Default for Report {
             shape_kind: ShapeKind::Rectangle,
             barcode_format: "Code128".to_string(),
             checked: false,
+            allow_html_tags: false,
             parent_band_id: Some("band_report_title".to_string()),
         };
 
@@ -441,6 +446,7 @@ impl Default for Report {
             shape_kind: ShapeKind::Rectangle,
             barcode_format: "Code128".to_string(),
             checked: false,
+            allow_html_tags: false,
             parent_band_id: Some("band_header".to_string()),
         };
 
@@ -466,6 +472,7 @@ impl Default for Report {
             shape_kind: ShapeKind::Rectangle,
             barcode_format: "Code128".to_string(),
             checked: false,
+            allow_html_tags: false,
             parent_band_id: Some("band_header".to_string()),
         };
 
@@ -491,6 +498,7 @@ impl Default for Report {
             shape_kind: ShapeKind::Rectangle,
             barcode_format: "Code128".to_string(),
             checked: false,
+            allow_html_tags: false,
             parent_band_id: Some("band_header".to_string()),
         };
 
@@ -516,6 +524,7 @@ impl Default for Report {
             shape_kind: ShapeKind::Rectangle,
             barcode_format: "Code128".to_string(),
             checked: false,
+            allow_html_tags: false,
             parent_band_id: Some("band_header".to_string()),
         };
 
@@ -541,6 +550,7 @@ impl Default for Report {
             shape_kind: ShapeKind::Rectangle,
             barcode_format: "Code128".to_string(),
             checked: false,
+            allow_html_tags: false,
             parent_band_id: Some("band_header".to_string()),
         };
 
@@ -566,6 +576,7 @@ impl Default for Report {
             shape_kind: ShapeKind::Rectangle,
             barcode_format: "Code128".to_string(),
             checked: false,
+            allow_html_tags: false,
             parent_band_id: Some("band_header".to_string()),
         };
 
@@ -601,6 +612,7 @@ impl Default for Report {
             shape_kind: ShapeKind::Rectangle,
             barcode_format: "Code128".to_string(),
             checked: false,
+            allow_html_tags: false,
             parent_band_id: Some("band_data".to_string()),
         };
 
@@ -626,6 +638,7 @@ impl Default for Report {
             shape_kind: ShapeKind::Rectangle,
             barcode_format: "Code128".to_string(),
             checked: false,
+            allow_html_tags: false,
             parent_band_id: Some("band_data".to_string()),
         };
 
@@ -651,6 +664,7 @@ impl Default for Report {
             shape_kind: ShapeKind::Rectangle,
             barcode_format: "Code128".to_string(),
             checked: false,
+            allow_html_tags: false,
             parent_band_id: Some("band_data".to_string()),
         };
 
@@ -676,6 +690,7 @@ impl Default for Report {
             shape_kind: ShapeKind::Rectangle,
             barcode_format: "Code128".to_string(),
             checked: false,
+            allow_html_tags: false,
             parent_band_id: Some("band_data".to_string()),
         };
 
@@ -701,6 +716,7 @@ impl Default for Report {
             shape_kind: ShapeKind::Rectangle,
             barcode_format: "Code128".to_string(),
             checked: false,
+            allow_html_tags: false,
             parent_band_id: Some("band_data".to_string()),
         };
 
@@ -726,6 +742,7 @@ impl Default for Report {
             shape_kind: ShapeKind::Rectangle,
             barcode_format: "Code128".to_string(),
             checked: false,
+            allow_html_tags: false,
             parent_band_id: Some("band_data".to_string()),
         };
 
@@ -761,6 +778,7 @@ impl Default for Report {
             shape_kind: ShapeKind::Rectangle,
             barcode_format: "Code128".to_string(),
             checked: false,
+            allow_html_tags: false,
             parent_band_id: Some("band_footer".to_string()),
         };
 
@@ -786,6 +804,7 @@ impl Default for Report {
             shape_kind: ShapeKind::Rectangle,
             barcode_format: "Code128".to_string(),
             checked: false,
+            allow_html_tags: false,
             parent_band_id: Some("band_footer".to_string()),
         };
 
@@ -821,6 +840,7 @@ impl Default for Report {
             shape_kind: ShapeKind::Rectangle,
             barcode_format: "Code128".to_string(),
             checked: false,
+            allow_html_tags: false,
             parent_band_id: Some("band_page_footer".to_string()),
         };
 
@@ -846,6 +866,7 @@ impl Default for Report {
             shape_kind: ShapeKind::Rectangle,
             barcode_format: "Code128".to_string(),
             checked: false,
+            allow_html_tags: false,
             parent_band_id: Some("band_page_footer".to_string()),
         };
 
@@ -872,6 +893,7 @@ impl Default for Report {
             shape_kind: ShapeKind::Rectangle,
             barcode_format: "Code128".to_string(),
             checked: false,
+            allow_html_tags: false,
             parent_band_id: None,
         };
 
