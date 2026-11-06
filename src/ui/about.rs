@@ -80,7 +80,7 @@ pub fn show(app: &mut ReportDesignerApp, ctx: &egui::Context) {
                     ui.add_space(8.0);
 
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("© 2026. All rights reserved.").size(11.0).color(MUTED));
+                        ui.label(RichText::new("© 2026. Licensed under GPL-3.0-or-later.").size(11.0).color(MUTED));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if icons::primary_button(ui, "Close").clicked() {
                                 app.show_about = false;
