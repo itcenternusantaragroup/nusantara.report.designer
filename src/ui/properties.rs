@@ -184,6 +184,54 @@ impl PropertiesPanel {
                 });
             }
 
+            // Conditional formatting: rules that recolour the component when its value matches.
+            egui::CollapsingHeader::new("Conditional formatting").id_salt("cond_fmt").default_open(false).show(ui, |ui| {
+                let mut remove: Option<usize> = None;
+                for (i, rule) in comp.conditions.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::from_id_salt(("cond_op", i))
+                            .selected_text(rule.op.symbol())
+                            .width(70.0)
+                            .show_ui(ui, |ui| {
+                                for op in CondOp::ALL {
+                                    if ui.selectable_value(&mut rule.op, op, op.symbol()).changed() {
+                                        changed = true;
+                                    }
+                                }
+                            });
+                        if ui.add(egui::TextEdit::singleline(&mut rule.value).desired_width(80.0)).changed() {
+                            changed = true;
+                        }
+                        let mut bg = Color32::from_rgba_premultiplied(rule.bg_color[0], rule.bg_color[1], rule.bg_color[2], rule.bg_color[3]);
+                        if ui.color_edit_button_srgba(&mut bg).on_hover_text("Fill colour").changed() {
+                            rule.bg_color = [bg.r(), bg.g(), bg.b(), bg.a()];
+                            changed = true;
+                        }
+                        let mut tc = Color32::from_rgba_premultiplied(rule.text_color[0], rule.text_color[1], rule.text_color[2], rule.text_color[3]);
+                        if ui.color_edit_button_srgba(&mut tc).on_hover_text("Text colour").changed() {
+                            rule.text_color = [tc.r(), tc.g(), tc.b(), tc.a()];
+                            changed = true;
+                        }
+                        if ui.small_button("X").on_hover_text("Remove rule").clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = remove {
+                    comp.conditions.remove(i);
+                    changed = true;
+                }
+                if ui.button("Add rule").clicked() {
+                    comp.conditions.push(CondRule {
+                        op: CondOp::Greater,
+                        value: String::new(),
+                        bg_color: [255, 235, 156, 255],
+                        text_color: [156, 0, 6, 255],
+                    });
+                    changed = true;
+                }
+                ui.label(theme::caption("The first matching rule sets the colours. Numbers compare as numbers."));
+            });
             // Section 5: Appearance & Colors
             egui::CollapsingHeader::new("Appearance").default_open(true).show(ui, |ui| {
                 ui.horizontal(|ui| {

@@ -15,6 +15,7 @@ rfd = "0.15"
 uuid = { version = "1.10", features = ["v4", "fast-rng"] }
 printpdf = { version = "0.7", features = ["embedded_images"] }
 ttf-parser = "0.19"
+barcoders = "2"
 
 [build-dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

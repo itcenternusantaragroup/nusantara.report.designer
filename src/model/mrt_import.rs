@@ -453,6 +453,9 @@ fn build_page(pv: &Value, unit: f32) -> Page {
     page.height = w.max(h);
     page.orientation = if w > h { Orientation::Landscape } else { Orientation::Portrait };
 
+    if let Some(wm) = pv.get("Watermark").and_then(|x| serde_json::from_value(x.clone()).ok()) {
+        page.watermark = Some(wm);
+    }
     if let Some(m) = pv.get("Margins") {
         let (l, r, t, b) = match m {
             Value::Object(_) => (num_of(m, "Left"), num_of(m, "Right"), num_of(m, "Top"), num_of(m, "Bottom")),
@@ -610,6 +613,7 @@ fn parse_component(cv: &Value, unit: f32) -> Option<Component> {
         comp.checked = checked;
     }
     comp.allow_html_tags = flag_of(cv, "AllowHtmlTags");
+    comp.conditions = cv.get("Conditions").and_then(|x| serde_json::from_value(x.clone()).ok()).unwrap_or_default();
     // Picture data is stored as base64 (JSON string, or the same text in XML).
     if let Some(b64) = cv.get("ImageBytes").and_then(|x| x.as_str()).map(str::trim).filter(|s| !s.is_empty()) {
         use base64::Engine;

@@ -109,6 +109,9 @@ impl PreviewView {
             let x = resp.rect.min.x + ((width - w_px) / 2.0).max(20.0);
             let rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(w_px, h_px));
             draw_paper(&painter, rect);
+            if let Some(wm) = &app.report.pages[sheet.page_idx].watermark {
+                draw_watermark(&painter, wm, rect, app.zoom);
+            }
 
             let mut sheet_vars = vars.clone();
             sheet_vars.insert("PageNumber".to_string(), (n + 1).to_string());
@@ -124,6 +127,7 @@ impl PreviewView {
                 if matches!(comp.comp_type, ComponentType::Text | ComponentType::Barcode | ComponentType::CheckBox) {
                     comp.text = eval.evaluate(&comp.text);
                 }
+                let comp = comp.with_conditions(&comp.text);
                 draw_component(&painter, &comp, rect, mm_px, app.zoom, &app.images);
             }
 
@@ -422,6 +426,21 @@ pub(super) fn page_size(app: &ReportDesignerApp, sheet: &Sheet) -> (f32, f32) {
 // Drawing
 // ---------------------------------------------------------------------------
 
+/// The watermark text, centred on the sheet and rotated by its angle, behind the content.
+fn draw_watermark(painter: &egui::Painter, wm: &Watermark, page_rect: Rect, zoom: f32) {
+    let size = wm.font_size * rt::px_per_pt(zoom);
+    let color = Color32::from_rgba_unmultiplied(wm.color[0], wm.color[1], wm.color[2], wm.color[3]);
+    let galley = painter.layout_no_wrap(wm.text.clone(), egui::FontId::proportional(size), color);
+    let (w, h) = (galley.size().x, galley.size().y);
+    let a = wm.angle.to_radians();
+    // The shape rotates around its top-left corner: move it so the text centre stays on the sheet centre.
+    let half = Vec2::new(w / 2.0, h / 2.0);
+    let rotated = Vec2::new(half.x * a.cos() - half.y * a.sin(), half.x * a.sin() + half.y * a.cos());
+    let pos = page_rect.center() - rotated;
+    let mut shape = egui::epaint::TextShape::new(pos, galley, color);
+    shape.angle = a;
+    painter.add(egui::Shape::Text(shape));
+}
 fn draw_paper(painter: &egui::Painter, rect: Rect) {
     painter.rect_filled(rect.translate(Vec2::new(0.0, 2.0)).expand(1.0), 2.0, Color32::from_black_alpha(28));
     painter.rect_filled(rect, 0.0, PAPER);
@@ -460,19 +479,29 @@ fn draw_component(
         }
         ComponentType::Barcode => {
             let bc_rect = c_rect.shrink(2.0);
-            let bar_w = 2.0 * zoom;
-            let mut bx = bc_rect.min.x;
-            let mut dark = false;
-            while bx < bc_rect.max.x {
-                if dark {
-                    painter.rect_filled(
-                        Rect::from_min_max(Pos2::new(bx, bc_rect.min.y), Pos2::new(bx + bar_w, bc_rect.max.y - 11.0)),
-                        0.0,
-                        Color32::BLACK,
+            let text_h = 11.0 * zoom;
+            let bars_rect = Rect::from_min_max(bc_rect.min, Pos2::new(bc_rect.max.x, bc_rect.max.y - text_h));
+            match crate::model::barcode::bars(&comp.barcode_format, &comp.text) {
+                Ok(bars) => {
+                    for (start, width) in bars {
+                        let x0 = bars_rect.min.x + start * bars_rect.width();
+                        let x1 = x0 + width * bars_rect.width();
+                        painter.rect_filled(
+                            Rect::from_min_max(Pos2::new(x0, bars_rect.min.y), Pos2::new(x1, bars_rect.max.y)),
+                            0.0,
+                            Color32::BLACK,
+                        );
+                    }
+                }
+                Err(e) => {
+                    painter.text(
+                        bars_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        format!("Barcode: {e}"),
+                        egui::FontId::proportional(9.0 * zoom),
+                        Color32::RED,
                     );
                 }
-                bx += bar_w + if (bx as usize) % 3 == 0 { 1.5 * bar_w } else { 0.5 * bar_w };
-                dark = !dark;
             }
             painter.text(
                 bc_rect.center_bottom() + Vec2::new(0.0, -1.0),
@@ -481,8 +510,7 @@ fn draw_component(
                 egui::FontId::monospace(9.0 * zoom),
                 Color32::BLACK,
             );
-        }
-        ComponentType::Line => {
+        }        ComponentType::Line => {
             let w = (comp.border_width * mm_px).max(1.5);
             let (a, b) = if c_rect.width() < c_rect.height() {
                 (c_rect.center_top(), c_rect.center_bottom())
@@ -657,6 +685,8 @@ fn sheets_to_html(app: &ReportDesignerApp) -> String {
                 String::new()
             };
 
+            let comp_c = comp.with_conditions(&text);
+            let comp = &comp_c;
             let mut style = format!(
                 "left:{:.2}mm;top:{:.2}mm;width:{:.2}mm;height:{:.2}mm;",
                 comp.rect.x, comp.rect.y, comp.rect.w, comp.rect.h

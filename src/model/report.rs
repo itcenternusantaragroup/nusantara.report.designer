@@ -241,6 +241,9 @@ pub struct Component {
     /// Picture data (PNG or JPEG) of an image component. `None` when the image is empty.
     pub image_data: Option<Vec<u8>>,
     pub parent_band_id: Option<String>,
+    /// Conditional formatting: the first rule whose test passes sets the colours.
+    #[serde(default)]
+    pub conditions: Vec<CondRule>,
 }
 
 impl Default for Component {
@@ -270,10 +273,111 @@ impl Default for Component {
             allow_html_tags: false,
             image_data: None,
             parent_band_id: None,
+            conditions: Vec::new(),
         }
     }
 }
 
+/// Comparison used by a conditional-formatting rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CondOp {
+    Greater,
+    GreaterOrEqual,
+    Less,
+    LessOrEqual,
+    Equal,
+    NotEqual,
+    Contains,
+}
+
+impl CondOp {
+    pub const ALL: [CondOp; 7] = [
+        CondOp::Greater,
+        CondOp::GreaterOrEqual,
+        CondOp::Less,
+        CondOp::LessOrEqual,
+        CondOp::Equal,
+        CondOp::NotEqual,
+        CondOp::Contains,
+    ];
+
+    pub fn symbol(self) -> &'static str {
+        match self {
+            CondOp::Greater => ">",
+            CondOp::GreaterOrEqual => ">=",
+            CondOp::Less => "<",
+            CondOp::LessOrEqual => "<=",
+            CondOp::Equal => "=",
+            CondOp::NotEqual => "<>",
+            CondOp::Contains => "contains",
+        }
+    }
+}
+
+/// One conditional-formatting rule: when the component's value passes `op value`, it is drawn
+/// with `bg_color` and `text_color`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CondRule {
+    pub op: CondOp,
+    pub value: String,
+    pub bg_color: [u8; 4],
+    pub text_color: [u8; 4],
+}
+
+impl CondRule {
+    /// Whether the rule matches `text`. Numbers compare as numbers when both sides parse
+    /// (Indonesian and English separators both work); otherwise the text is compared.
+    pub fn matches(&self, text: &str) -> bool {
+        let text = text.trim();
+        if self.op == CondOp::Contains {
+            return !self.value.is_empty() && text.to_lowercase().contains(&self.value.to_lowercase());
+        }
+        let ordering = match (crate::model::expr::parse_number(text), crate::model::expr::parse_number(self.value.trim())) {
+            (Some(a), Some(b)) => a.partial_cmp(&b),
+            _ => Some(text.cmp(self.value.trim())),
+        };
+        let Some(ord) = ordering else { return false };
+        use std::cmp::Ordering::*;
+        match self.op {
+            CondOp::Greater => ord == Greater,
+            CondOp::GreaterOrEqual => ord != Less,
+            CondOp::Less => ord == Less,
+            CondOp::LessOrEqual => ord != Greater,
+            CondOp::Equal => ord == Equal,
+            CondOp::NotEqual => ord != Equal,
+            CondOp::Contains => false,
+        }
+    }
+}
+
+impl Component {
+    /// A copy of the component with the colours of the first matching rule applied.
+    /// `text` is the value shown (after expressions are evaluated).
+    pub fn with_conditions(&self, text: &str) -> Component {
+        let mut c = self.clone();
+        if let Some(rule) = self.conditions.iter().find(|r| r.matches(text)) {
+            c.bg_color = rule.bg_color;
+            c.text_color = rule.text_color;
+        }
+        c
+    }
+}
+/// A text watermark drawn behind the content of every sheet of a page.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Watermark {
+    pub text: String,
+    pub font_size: f32, // in pt
+    /// Colour with alpha: lower alpha is more transparent.
+    pub color: [u8; 4],
+    /// Degrees, clockwise (screen direction). 45 gives the usual diagonal stamp.
+    pub angle: f32,
+}
+
+impl Default for Watermark {
+    fn default() -> Self {
+        Self { text: "DRAFT".to_string(), font_size: 72.0, color: [150, 150, 150, 70], angle: 45.0 }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Page {
     pub id: String,
@@ -284,6 +388,8 @@ pub struct Page {
     pub orientation: Orientation,
     pub bands: Vec<Band>,
     pub components: Vec<Component>,
+    #[serde(default)]
+    pub watermark: Option<Watermark>,
 }
 
 impl Default for Page {
@@ -297,6 +403,7 @@ impl Default for Page {
             orientation: Orientation::Portrait,
             bands: Vec::new(),
             components: Vec::new(),
+            watermark: None,
         }
     }
 }
@@ -401,6 +508,7 @@ impl Default for Report {
             allow_html_tags: false,
             image_data: None,
             parent_band_id: Some("band_report_title".to_string()),
+            conditions: Vec::new(),
         };
 
         let comp_subtitle = Component {
@@ -428,6 +536,7 @@ impl Default for Report {
             allow_html_tags: false,
             image_data: None,
             parent_band_id: Some("band_report_title".to_string()),
+            conditions: Vec::new(),
         };
 
         // 2. Header Band (Table Column Headers)
@@ -466,6 +575,7 @@ impl Default for Report {
             allow_html_tags: false,
             image_data: None,
             parent_band_id: Some("band_header".to_string()),
+            conditions: Vec::new(),
         };
 
         let h_customer = Component {
@@ -493,6 +603,7 @@ impl Default for Report {
             allow_html_tags: false,
             image_data: None,
             parent_band_id: Some("band_header".to_string()),
+            conditions: Vec::new(),
         };
 
         let h_product = Component {
@@ -520,6 +631,7 @@ impl Default for Report {
             allow_html_tags: false,
             image_data: None,
             parent_band_id: Some("band_header".to_string()),
+            conditions: Vec::new(),
         };
 
         let h_qty = Component {
@@ -547,6 +659,7 @@ impl Default for Report {
             allow_html_tags: false,
             image_data: None,
             parent_band_id: Some("band_header".to_string()),
+            conditions: Vec::new(),
         };
 
         let h_price = Component {
@@ -574,6 +687,7 @@ impl Default for Report {
             allow_html_tags: false,
             image_data: None,
             parent_band_id: Some("band_header".to_string()),
+            conditions: Vec::new(),
         };
 
         let h_total = Component {
@@ -601,6 +715,7 @@ impl Default for Report {
             allow_html_tags: false,
             image_data: None,
             parent_band_id: Some("band_header".to_string()),
+            conditions: Vec::new(),
         };
 
         // 3. Data Band (Row Template)
@@ -639,6 +754,7 @@ impl Default for Report {
             allow_html_tags: false,
             image_data: None,
             parent_band_id: Some("band_data".to_string()),
+            conditions: Vec::new(),
         };
 
         let d_customer = Component {
@@ -666,6 +782,7 @@ impl Default for Report {
             allow_html_tags: false,
             image_data: None,
             parent_band_id: Some("band_data".to_string()),
+            conditions: Vec::new(),
         };
 
         let d_product = Component {
@@ -693,6 +810,7 @@ impl Default for Report {
             allow_html_tags: false,
             image_data: None,
             parent_band_id: Some("band_data".to_string()),
+            conditions: Vec::new(),
         };
 
         let d_qty = Component {
@@ -720,6 +838,7 @@ impl Default for Report {
             allow_html_tags: false,
             image_data: None,
             parent_band_id: Some("band_data".to_string()),
+            conditions: Vec::new(),
         };
 
         let d_price = Component {
@@ -747,6 +866,7 @@ impl Default for Report {
             allow_html_tags: false,
             image_data: None,
             parent_band_id: Some("band_data".to_string()),
+            conditions: Vec::new(),
         };
 
         let d_total = Component {
@@ -774,6 +894,7 @@ impl Default for Report {
             allow_html_tags: false,
             image_data: None,
             parent_band_id: Some("band_data".to_string()),
+            conditions: Vec::new(),
         };
 
         // 4. Footer Band (Totals & Signature)
@@ -812,6 +933,7 @@ impl Default for Report {
             allow_html_tags: false,
             image_data: None,
             parent_band_id: Some("band_footer".to_string()),
+            conditions: Vec::new(),
         };
 
         let f_sum = Component {
@@ -839,6 +961,7 @@ impl Default for Report {
             allow_html_tags: false,
             image_data: None,
             parent_band_id: Some("band_footer".to_string()),
+            conditions: Vec::new(),
         };
 
         // 5. Page Footer Band
@@ -877,6 +1000,7 @@ impl Default for Report {
             allow_html_tags: false,
             image_data: None,
             parent_band_id: Some("band_page_footer".to_string()),
+            conditions: Vec::new(),
         };
 
         let pf_page_num = Component {
@@ -904,6 +1028,7 @@ impl Default for Report {
             allow_html_tags: false,
             image_data: None,
             parent_band_id: Some("band_page_footer".to_string()),
+            conditions: Vec::new(),
         };
 
         // Extra elements: Barcode for order tracking
@@ -932,6 +1057,7 @@ impl Default for Report {
             allow_html_tags: false,
             image_data: None,
             parent_band_id: None,
+            conditions: Vec::new(),
         };
 
         page.bands = vec![title_band, header_band, data_band, footer_band, page_footer_band];
@@ -946,5 +1072,41 @@ impl Default for Report {
 
         report.pages.push(page);
         report
+    }
+}
+
+#[cfg(test)]
+mod conditional_tests {
+    use super::*;
+
+    fn rule(op: CondOp, value: &str) -> CondRule {
+        CondRule { op, value: value.to_string(), bg_color: [255, 0, 0, 255], text_color: [0, 0, 255, 255] }
+    }
+
+    #[test]
+    fn numbers_compare_with_either_separator() {
+        assert!(rule(CondOp::Greater, "100").matches("150"));
+        assert!(rule(CondOp::Greater, "100").matches("1.500"));
+        assert!(!rule(CondOp::Greater, "100").matches("50"));
+        assert!(rule(CondOp::LessOrEqual, "2,5").matches("2.5"));
+        assert!(rule(CondOp::NotEqual, "0").matches("3"));
+    }
+
+    #[test]
+    fn text_contains_ignores_case() {
+        assert!(rule(CondOp::Contains, "abc").matches("xABCx"));
+        assert!(!rule(CondOp::Contains, "abc").matches("xyz"));
+    }
+
+    #[test]
+    fn first_matching_rule_sets_colours() {
+        let mut comp = Component::default();
+        comp.conditions = vec![
+            rule(CondOp::Greater, "1000"),
+            CondRule { op: CondOp::Greater, value: "10".into(), bg_color: [1, 2, 3, 255], text_color: [4, 5, 6, 255] },
+        ];
+        assert_eq!(comp.with_conditions("5000").bg_color, [255, 0, 0, 255]);
+        assert_eq!(comp.with_conditions("500").bg_color, [1, 2, 3, 255]);
+        assert_eq!(comp.with_conditions("5").bg_color, comp.bg_color);
     }
 }

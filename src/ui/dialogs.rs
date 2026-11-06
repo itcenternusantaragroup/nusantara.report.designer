@@ -132,6 +132,31 @@ impl PageSetupDialog {
                     });
 
                     ui.add_space(8.0);
+                    ui.heading("Watermark");
+                    let mut enabled = page.watermark.is_some();
+                    if ui.checkbox(&mut enabled, "Show a text watermark on every sheet").changed() {
+                        page.watermark = if enabled { Some(crate::model::Watermark::default()) } else { None };
+                    }
+                    if let Some(wm) = page.watermark.as_mut() {
+                        ui.horizontal(|ui| {
+                            ui.label("Text:");
+                            ui.text_edit_singleline(&mut wm.text);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Size:");
+                            ui.add(egui::DragValue::new(&mut wm.font_size).speed(1.0).range(8.0..=300.0).suffix(" pt"));
+                            ui.label("Angle:");
+                            ui.add(egui::DragValue::new(&mut wm.angle).speed(1.0).range(-90.0..=90.0).suffix(" deg"));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Colour (alpha = opacity):");
+                            let mut c = egui::Color32::from_rgba_unmultiplied(wm.color[0], wm.color[1], wm.color[2], wm.color[3]);
+                            if ui.color_edit_button_srgba(&mut c).changed() {
+                                wm.color = [c.r(), c.g(), c.b(), c.a()];
+                            }
+                        });
+                    }
+                    ui.add_space(8.0);
                     ui.heading("Margins (mm)");
                     ui.columns(2, |cols| {
                         cols[0].horizontal(|ui| {

@@ -1,3 +1,4 @@
+pub mod barcode;
 pub mod dictionary;
 pub mod mrt;
 pub mod report;

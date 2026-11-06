@@ -131,6 +131,7 @@ impl MrtHandler {
                     Orientation::Portrait => "Portrait",
                     Orientation::Landscape => "Landscape",
                 },
+                "Watermark": serde_json::to_value(&page.watermark).unwrap_or(Value::Null),
                 "Margins": {
                     "Left": m_left_cm,
                     "Right": m_right_cm,
@@ -257,6 +258,7 @@ impl MrtHandler {
             "BarCodeType": comp.barcode_format,
             "Checked": comp.checked,
             "AllowHtmlTags": comp.allow_html_tags,
+            "Conditions": serde_json::to_value(&comp.conditions).unwrap_or(Value::Null),
             "ImageBytes": comp.image_data.as_ref().map(|b| {
                 use base64::Engine;
                 base64::engine::general_purpose::STANDARD.encode(b)

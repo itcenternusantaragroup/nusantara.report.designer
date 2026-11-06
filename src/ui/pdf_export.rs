@@ -12,6 +12,8 @@ use printpdf::{
     PdfDocumentReference, PdfLayerReference, Point, Polygon, Pt, Rgb,
 };
 use printpdf::path::{PaintMode, WindingOrder};
+use printpdf::TextMatrix;
+use crate::model::report::Watermark;
 
 use crate::model::expr::EvalContext;
 use crate::model::richtext::parse_runs;
@@ -45,6 +47,10 @@ pub fn sheets_to_pdf(app: &ReportDesignerApp) -> Result<Vec<u8>, String> {
         sheet_vars.insert("PageNumber".to_string(), (n + 1).to_string());
         sheet_vars.insert("TotalPageCount".to_string(), total.to_string());
 
+        if let Some(wm) = &app.report.pages[sheet.page_idx].watermark {
+            draw_watermark(&layer, &fonts, pw, ph, wm);
+        }
+
         for item in &sheet.items {
             let eval = EvalContext {
                 dictionary: &app.report.dictionary,
@@ -55,6 +61,7 @@ pub fn sheets_to_pdf(app: &ReportDesignerApp) -> Result<Vec<u8>, String> {
             if matches!(comp.comp_type, ComponentType::Text | ComponentType::Barcode | ComponentType::CheckBox) {
                 comp.text = eval.evaluate(&comp.text);
             }
+            let comp = comp.with_conditions(&comp.text);
             draw_component(&layer, &fonts, ph, &comp);
         }
     }
@@ -336,20 +343,17 @@ fn draw_component(layer: &PdfLayerReference, fonts: &Fonts, ph: f32, comp: &Comp
             draw_text(layer, fonts, ph, segs, comp.font_size, (x, y, w, h), comp.align_h, comp.align_v, comp.word_wrap);
         }
         ComponentType::Barcode => {
-            // Same drawing as the preview: alternating bars, then the value under them.
-            let bar_w = 0.5_f32;
-            let bar_h = (h - 3.5).max(1.0);
-            let mut bx = x + 1.0;
-            let mut i = 0_usize;
-            let mut dark = false;
-            while bx < x + w - 1.0 {
-                if dark {
+            let text_h = 3.5;
+            let (bx, bw) = (x + 1.0, (w - 2.0).max(1.0));
+            let bar_h = (h - text_h).max(1.0);
+            match crate::model::barcode::bars(&comp.barcode_format, &comp.text) {
+                Ok(bars) => {
                     layer.set_fill_color(rgb([0, 0, 0, 255]));
-                    layer.add_polygon(rect_poly(ph, bx, y + 1.0, bar_w, bar_h, PaintMode::Fill));
+                    for (start, width) in bars {
+                        layer.add_polygon(rect_poly(ph, bx + start * bw, y + 1.0, width * bw, bar_h - 1.0, PaintMode::Fill));
+                    }
                 }
-                bx += bar_w + if i % 3 == 0 { 1.5 * bar_w } else { 0.5 * bar_w };
-                i += 1;
-                dark = !dark;
+                Err(_) => {}
             }
             let segs = vec![Seg {
                 text: comp.text.clone(),
@@ -361,8 +365,7 @@ fn draw_component(layer: &PdfLayerReference, fonts: &Fonts, ph: f32, comp: &Comp
                 width: width_pt(&fonts.faces[0], &comp.text, 9.0),
             }];
             draw_text(layer, fonts, ph, segs, 9.0, (x + 1.0, y, w - 2.0, h), AlignH::Center, AlignV::Bottom, false);
-        }
-        ComponentType::Line => {
+        }        ComponentType::Line => {
             let width = border_pt(comp);
             if w < h {
                 stroke_line(layer, ph, (x + w / 2.0, y), (x + w / 2.0, y + h), comp.border_color, width);
@@ -473,5 +476,50 @@ mod tests {
         let out = std::env::temp_dir().join("nusa_sample_report.pdf");
         std::fs::write(&out, &bytes).expect("write");
         println!("pdf bytes={} path={}", bytes.len(), out.display());
+    }
+}
+/// The watermark text, centred on the page and rotated (clockwise by its angle).
+/// Its alpha is blended into the colour, since PDF transparency is not written here.
+fn draw_watermark(layer: &PdfLayerReference, fonts: &Fonts, pw: f32, ph: f32, wm: &Watermark) {
+    let a = wm.color[3] as f32 / 255.0;
+    let blend = |c: u8| (255.0 - (255.0 - c as f32) * a) / 255.0;
+    let width = width_pt(&fonts.faces[0], &wm.text, wm.font_size);
+    let (cx, cy) = (pw * PT_PER_MM / 2.0, ph * PT_PER_MM / 2.0);
+    // PDF rotates counter-clockwise; the watermark angle is clockwise on screen.
+    let theta = -wm.angle.to_radians();
+    // Start of the baseline, relative to the centre of the text.
+    let (sx, sy) = (-width / 2.0, -wm.font_size * 0.35);
+    let e = cx + sx * theta.cos() - sy * theta.sin();
+    let f = cy + sx * theta.sin() + sy * theta.cos();
+    layer.begin_text_section();
+    layer.set_font(&fonts.faces[0].font, wm.font_size);
+    layer.set_fill_color(Color::Rgb(Rgb::new(blend(wm.color[0]), blend(wm.color[1]), blend(wm.color[2]), None)));
+    layer.set_text_matrix(TextMatrix::Raw([theta.cos(), theta.sin(), -theta.sin(), theta.cos(), e, f]));
+    layer.write_text(wm.text.clone(), &fonts.faces[0].font);
+    layer.end_text_section();
+}
+#[cfg(test)]
+mod demo_tests {
+    use super::*;
+
+    #[test]
+    fn demo_watermark_and_barcode_pdf() {
+        let Ok(out) = std::env::var("NUSA_DEMO_PDF") else { return };
+        let mut app = ReportDesignerApp::new(None, None);
+        let page = &mut app.report.pages[0];
+        page.watermark = Some(crate::model::Watermark::default());
+        let mut bc = Component::default();
+        bc.comp_type = ComponentType::Barcode;
+        bc.barcode_format = "Code128".into();
+        bc.text = "NO-2026-00123".into();
+        bc.rect = RectMm::new(20.0, 30.0, 90.0, 25.0);
+        page.components.push(bc);
+        let mut cond = Component::default();
+        cond.text = "{Value}".into();
+        cond.rect = RectMm::new(20.0, 70.0, 60.0, 8.0);
+        cond.conditions = vec![CondRule { op: CondOp::Greater, value: "100".into(), bg_color: [255, 235, 156, 255], text_color: [156, 0, 6, 255] }];
+        page.components.push(cond);
+        let bytes = sheets_to_pdf(&app).expect("export");
+        std::fs::write(&out, bytes).expect("write");
     }
 }
