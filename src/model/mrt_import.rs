@@ -359,6 +359,7 @@ fn read_dictionary_json(dict: &Value, report: &mut Report, base_dir: Option<&Pat
                 alias,
                 value: str_of(var, "Value").to_string(),
                 var_type: str_of(var, "Type").to_string(),
+                running: var.get("Running").and_then(|x| serde_json::from_value(x.clone()).ok()),
             });
         }
     }
@@ -455,6 +456,9 @@ fn build_page(pv: &Value, unit: f32) -> Page {
 
     if let Some(wm) = pv.get("Watermark").and_then(|x| serde_json::from_value(x.clone()).ok()) {
         page.watermark = Some(wm);
+    }
+    if let Some(gs) = pv.get("Guides").and_then(|x| serde_json::from_value(x.clone()).ok()) {
+        page.guides = gs;
     }
     if let Some(m) = pv.get("Margins") {
         let (l, r, t, b) = match m {

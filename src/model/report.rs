@@ -378,6 +378,13 @@ impl Default for Watermark {
         Self { text: "DRAFT".to_string(), font_size: 72.0, color: [150, 150, 150, 70], angle: 45.0 }
     }
 }
+/// A guide line on a page, used for placing and snapping components. Design aid only.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Guide {
+    /// true: a vertical line at x = `pos`; false: a horizontal line at y = `pos` (mm).
+    pub vertical: bool,
+    pub pos: f32,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Page {
     pub id: String,
@@ -390,6 +397,8 @@ pub struct Page {
     pub components: Vec<Component>,
     #[serde(default)]
     pub watermark: Option<Watermark>,
+    #[serde(default)]
+    pub guides: Vec<Guide>,
 }
 
 impl Default for Page {
@@ -404,6 +413,7 @@ impl Default for Page {
             bands: Vec::new(),
             components: Vec::new(),
             watermark: None,
+            guides: Vec::new(),
         }
     }
 }

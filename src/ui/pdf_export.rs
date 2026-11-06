@@ -34,6 +34,7 @@ pub fn sheets_to_pdf(app: &ReportDesignerApp) -> Result<Vec<u8>, String> {
     }
     let total = sheets.len();
     let vars = base_vars(app);
+    let running = RunningTotals::new(&app.report.dictionary);
 
     let doc = PdfDocument::empty(app.report.alias.clone());
     let fonts = load_fonts(&doc)?;
@@ -52,10 +53,12 @@ pub fn sheets_to_pdf(app: &ReportDesignerApp) -> Result<Vec<u8>, String> {
         }
 
         for item in &sheet.items {
+            let mut item_vars = sheet_vars.clone();
+            running.apply(&item.rows, &mut item_vars);
             let eval = EvalContext {
                 dictionary: &app.report.dictionary,
                 row_index: &item.rows,
-                vars: &sheet_vars,
+                vars: &item_vars,
             };
             let mut comp = item.comp.clone();
             if matches!(comp.comp_type, ComponentType::Text | ComponentType::Barcode | ComponentType::CheckBox) {

@@ -55,6 +55,10 @@ pub enum DragState {
         /// Other selected components that move with it: (id, rect at the start of the drag).
         others: Vec<(String, RectMm)>,
     },
+    /// Dragging a guide line (or a new one pulled from a ruler): index into the page's guides.
+    Guide {
+        index: usize,
+    },
     /// Rubber-band selection: start is the press point in screen pixels.
     Marquee {
         start: (f32, f32),

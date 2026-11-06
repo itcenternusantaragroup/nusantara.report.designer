@@ -91,6 +91,7 @@ impl PreviewView {
         let sheets = build_sheets(app);
         let total = sheets.len();
         let vars = base_vars(app);
+        let running = RunningTotals::new(&app.report.dictionary);
         let mm_px = 3.78 * app.zoom;
 
         let max_w = sheets
@@ -118,10 +119,12 @@ impl PreviewView {
             sheet_vars.insert("TotalPageCount".to_string(), total.to_string());
 
             for item in &sheet.items {
+                let mut item_vars = sheet_vars.clone();
+                running.apply(&item.rows, &mut item_vars);
                 let eval = EvalContext {
                     dictionary: &app.report.dictionary,
                     row_index: &item.rows,
-                    vars: &sheet_vars,
+                    vars: &item_vars,
                 };
                 let mut comp = item.comp.clone();
                 if matches!(comp.comp_type, ComponentType::Text | ComponentType::Barcode | ComponentType::CheckBox) {
@@ -654,6 +657,7 @@ fn sheets_to_html(app: &ReportDesignerApp) -> String {
     let sheets = build_sheets(app);
     let total = sheets.len();
     let vars = base_vars(app);
+    let running = RunningTotals::new(&app.report.dictionary);
     let title = escape_html(&app.report.alias);
 
     let mut html = format!(
@@ -674,10 +678,12 @@ fn sheets_to_html(app: &ReportDesignerApp) -> String {
 
         for item in &sheet.items {
             let comp = &item.comp;
+            let mut item_vars = sheet_vars.clone();
+            running.apply(&item.rows, &mut item_vars);
             let eval = EvalContext {
                 dictionary: &app.report.dictionary,
                 row_index: &item.rows,
-                vars: &sheet_vars,
+                vars: &item_vars,
             };
             let text = if matches!(comp.comp_type, ComponentType::Text | ComponentType::Barcode | ComponentType::CheckBox) {
                 eval.evaluate(&comp.text)

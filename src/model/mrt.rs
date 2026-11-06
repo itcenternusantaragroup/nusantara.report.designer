@@ -132,6 +132,7 @@ impl MrtHandler {
                     Orientation::Landscape => "Landscape",
                 },
                 "Watermark": serde_json::to_value(&page.watermark).unwrap_or(Value::Null),
+                "Guides": serde_json::to_value(&page.guides).unwrap_or(Value::Null),
                 "Margins": {
                     "Left": m_left_cm,
                     "Right": m_right_cm,
@@ -175,6 +176,7 @@ impl MrtHandler {
                 "Alias": var.alias,
                 "Type": var.var_type,
                 "Value": var.value,
+                "Running": serde_json::to_value(&var.running).unwrap_or(Value::Null),
             }));
         }
 

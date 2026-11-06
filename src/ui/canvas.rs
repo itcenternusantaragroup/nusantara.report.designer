@@ -314,7 +314,8 @@ impl CanvasView {
 
         // 6. Draw Rulers
         if app.show_rulers {
-            Self::draw_rulers(app, &painter, page_rect, ruler_size, mm_to_px);
+            Self::draw_guides(app, &painter, page_rect, mm_to_px);
+        Self::draw_rulers(app, &painter, page_rect, ruler_size, mm_to_px);
         }
 
         // 7. Interactive Mouse Events: Selection, Dragging, Resizing, Insertion
@@ -330,6 +331,19 @@ impl CanvasView {
         Self::handle_mouse_interactions(app, &response, page_rect, mm_to_px);
     }
 
+/// Guide lines across the page, in a blue that stands out from the grid.
+    fn draw_guides(app: &ReportDesignerApp, painter: &egui::Painter, page_rect: Rect, mm_to_px: f32) {
+        let stroke = Stroke::new(1.0_f32, Color32::from_rgb(0, 150, 220));
+        for g in &app.current_page().guides {
+            if g.vertical {
+                let x = page_rect.min.x + g.pos * mm_to_px;
+                painter.line_segment([Pos2::new(x, page_rect.min.y), Pos2::new(x, page_rect.max.y)], stroke);
+            } else {
+                let y = page_rect.min.y + g.pos * mm_to_px;
+                painter.line_segment([Pos2::new(page_rect.min.x, y), Pos2::new(page_rect.max.x, y)], stroke);
+            }
+        }
+    }
     fn draw_rulers(app: &ReportDesignerApp, painter: &egui::Painter, page_rect: Rect, ruler_size: f32, mm_to_px: f32) {
         let ruler_bg = theme::CHROME;
         let tick_c = theme::MUTED;
@@ -513,6 +527,31 @@ impl CanvasView {
             // recognised the drag (a few pixels later), so the handle stays under the pointer.
             let press_origin = response.ctx.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos());
             if let Some(press) = press_origin {
+                // Guides: pulling from a ruler makes a new guide; pressing a guide line grabs it.
+                let ruler = if app.show_rulers { 22.0 } else { 0.0 };
+                let on_page_x = press.x >= page_rect.min.x && press.x <= page_rect.max.x;
+                let on_page_y = press.y >= page_rect.min.y && press.y <= page_rect.max.y;
+                let from_top = ruler > 0.0 && on_page_x && press.y < page_rect.min.y && press.y >= page_rect.min.y - ruler;
+                let from_left = ruler > 0.0 && on_page_y && press.x < page_rect.min.x && press.x >= page_rect.min.x - ruler;
+                if from_top || from_left {
+                    app.push_undo();
+                    app.current_page_mut().guides.push(Guide { vertical: from_left, pos: 0.0 });
+                    let index = app.current_page().guides.len() - 1;
+                    app.drag_state = DragState::Guide { index };
+                    return;
+                }
+                let hit_guide = app.current_page().guides.iter().position(|g| {
+                    if g.vertical {
+                        on_page_y && (press.x - (page_rect.min.x + g.pos * mm_to_px)).abs() < 4.0
+                    } else {
+                        on_page_x && (press.y - (page_rect.min.y + g.pos * mm_to_px)).abs() < 4.0
+                    }
+                });
+                if let Some(index) = hit_guide {
+                    app.push_undo();
+                    app.drag_state = DragState::Guide { index };
+                    return;
+                }
                 let mx_mm = (press.x - page_rect.min.x) / mm_to_px;
                 let my_mm = (press.y - page_rect.min.y) / mm_to_px;
                 if let Some(comp) = app.selected_component() {
@@ -603,6 +642,10 @@ impl CanvasView {
                             new_x = magnetic(new_x, app.grid_size_mm);
                             new_y = magnetic(new_y, app.grid_size_mm);
                         }
+                        // Guides win over the grid: an edge or the centre near a guide snaps onto it.
+                        let guides = app.current_page().guides.clone();
+                        new_x = snap_to_guides(&guides, new_x, initial_rect.w, true);
+                        new_y = snap_to_guides(&guides, new_y, initial_rect.h, false);
 
                         if let Some(comp) = app.current_page_mut().components.iter_mut().find(|c| c.id == comp_id) {
                             comp.rect.x = new_x.max(0.0);
@@ -615,6 +658,14 @@ impl CanvasView {
                                 c.rect.x = (orect.x + ddx).max(0.0);
                                 c.rect.y = (orect.y + ddy).max(0.0);
                             }
+                        }
+                    }
+                    DragState::Guide { index } => {
+                        let vertical = app.current_page().guides.get(index).map(|g| g.vertical).unwrap_or(false);
+                        let (pw, ph) = app.current_page().effective_dimensions();
+                        let (pos, limit) = if vertical { (mx_mm, pw) } else { (my_mm, ph) };
+                        if let Some(g) = app.current_page_mut().guides.get_mut(index) {
+                            g.pos = pos.clamp(0.0, limit);
                         }
                     }
                     DragState::Resizing { comp_id, handle, initial_rect, mouse_start_mm } => {
@@ -696,6 +747,13 @@ impl CanvasView {
         }
 
         if response.drag_stopped() {
+            // A guide dragged off the page is removed.
+            if let DragState::Guide { index } = app.drag_state {
+                let off_page = response.ctx.input(|i| i.pointer.interact_pos()).map_or(true, |p| !page_rect.contains(p));
+                if off_page && index < app.current_page().guides.len() {
+                    app.current_page_mut().guides.remove(index);
+                }
+            }
             if let DragState::Marquee { start } = app.drag_state.clone() {
                 let end = response.ctx.input(|i| i.pointer.interact_pos()).unwrap_or(Pos2::new(start.0, start.1));
                 let (x0, x1) = (start.0.min(end.x), start.0.max(end.x));
@@ -759,7 +817,41 @@ const MIN_SIZE_MM: f32 = 2.0;
 
 /// Snaps `v` to the grid only when it is close to a grid line (within 30% of the grid step).
 /// Far from a line the value is kept as it is, so dragging stays smooth.
+/// Moves `v` (the start of an item of width or height `size`) so that its start, centre or end
+/// sits exactly on a guide, when one is within 1 mm.
+fn snap_to_guides(guides: &[Guide], v: f32, size: f32, vertical: bool) -> f32 {
+    let mut best: Option<(f32, f32)> = None;
+    for g in guides.iter().filter(|g| g.vertical == vertical) {
+        for cand in [v, v + size / 2.0, v + size] {
+            let d = (cand - g.pos).abs();
+            if d < 1.0 && best.map_or(true, |(bd, _)| d < bd) {
+                best = Some((d, v + g.pos - cand));
+            }
+        }
+    }
+    best.map_or(v, |(_, nv)| nv)
+}
 fn magnetic(v: f32, grid: f32) -> f32 {
     let nearest = (v / grid).round() * grid;
     if (nearest - v).abs() <= grid * 0.3 { nearest } else { v }
+}
+
+#[cfg(test)]
+mod guide_tests {
+    use super::*;
+
+    #[test]
+    fn edges_and_centre_snap_to_a_nearby_guide() {
+        let guides = [Guide { vertical: true, pos: 50.0 }];
+        // Left edge 0.4 mm from the guide: moves onto it.
+        assert!((snap_to_guides(&guides, 50.4, 20.0, true) - 50.0).abs() < 1e-4);
+        // Right edge (30 + 20 = 50) already on the guide.
+        assert!((snap_to_guides(&guides, 30.0, 20.0, true) - 30.0).abs() < 1e-4);
+        // Centre (40 + 10 = 50) on the guide: left edge moves to 40 (unchanged here).
+        assert!((snap_to_guides(&guides, 40.0, 20.0, true) - 40.0).abs() < 1e-4);
+        // Far from any guide: unchanged.
+        assert!((snap_to_guides(&guides, 10.0, 20.0, true) - 10.0).abs() < 1e-4);
+        // Horizontal guides do not affect vertical moves.
+        assert!((snap_to_guides(&[Guide { vertical: false, pos: 50.0 }], 50.4, 20.0, true) - 50.4).abs() < 1e-4);
+    }
 }

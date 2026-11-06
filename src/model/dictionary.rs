@@ -23,6 +23,64 @@ pub struct Variable {
     pub alias: String,
     pub value: String,
     pub var_type: String,
+    /// When set, the variable is a running total (or count) over a data column, updated row by row.
+    #[serde(default)]
+    pub running: Option<Running>,
+}
+
+/// A running variable: the sum (or count) of `column` over the rows of `source` printed so far.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Running {
+    pub source: String,
+    pub column: String,
+    pub kind: RunningKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RunningKind {
+    Sum,
+    Count,
+}
+
+/// Running values of every running variable, precomputed per data source.
+pub struct RunningTotals {
+    /// (variable name, source name, prefix values); entry `k` is the value after the first `k` rows.
+    prefix: Vec<(String, String, Vec<f64>)>,
+}
+
+impl RunningTotals {
+    pub fn new(dict: &Dictionary) -> Self {
+        let mut prefix = Vec::new();
+        for var in &dict.variables {
+            let Some(run) = &var.running else { continue };
+            let Some(ds) = dict.data_sources.iter().find(|d| d.name == run.source) else { continue };
+            let mut acc = 0.0_f64;
+            let mut values = vec![0.0];
+            for row in &ds.rows {
+                match run.kind {
+                    RunningKind::Sum => {
+                        acc += row.get(&run.column).and_then(|v| crate::model::expr::parse_number(v)).unwrap_or(0.0);
+                    }
+                    RunningKind::Count => acc += 1.0,
+                }
+                values.push(acc);
+            }
+            prefix.push((var.name.clone(), run.source.clone(), values));
+        }
+        Self { prefix }
+    }
+
+    /// Sets the running variables in `vars` for a printed row. `rows` maps data source names to
+    /// the row index of the band; a source the band does not use gives the total of all rows.
+    pub fn apply(&self, rows: &std::collections::HashMap<String, usize>, vars: &mut HashMap<String, String>) {
+        for (name, source, values) in &self.prefix {
+            let last = values.len() - 1;
+            let done = rows.get(source).map(|i| i + 1).unwrap_or(last).min(last);
+            let v = values[done];
+            let text = if v.fract() == 0.0 { format!("{}", v as i64) } else { format!("{v:.2}") };
+            vars.insert(name.clone(), text);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,12 +134,14 @@ impl Default for Dictionary {
             alias: "Company Name".to_string(),
             value: "Northwind Traders Inc.".to_string(),
             var_type: "String".to_string(),
+            running: None,
         });
         company_vars.push(Variable {
             name: "ReportTitle".to_string(),
             alias: "Report Title".to_string(),
             value: "Monthly Sales Report".to_string(),
             var_type: "String".to_string(),
+            running: None,
         });
 
         Self {
@@ -218,5 +278,49 @@ mod data_file_tests {
             }
         }
         assert!(!sources.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod running_tests {
+    use super::*;
+
+    fn row(amt: &str) -> HashMap<String, String> {
+        HashMap::from([("amt".to_string(), amt.to_string())])
+    }
+
+    #[test]
+    fn running_sum_and_count_follow_the_printed_row() {
+        let dict = Dictionary {
+            data_sources: vec![DataSource {
+                name: "d".into(),
+                alias: "d".into(),
+                columns: vec![Column { name: "amt".into(), data_type: "System.Decimal".into() }],
+                rows: vec![row("10"), row("2,5"), row("x")],
+            }],
+            variables: vec![
+                Variable { name: "Total".into(), alias: "Total".into(), value: String::new(), var_type: String::new(),
+                    running: Some(Running { source: "d".into(), column: "amt".into(), kind: RunningKind::Sum }) },
+                Variable { name: "Count".into(), alias: "Count".into(), value: String::new(), var_type: String::new(),
+                    running: Some(Running { source: "d".into(), column: "amt".into(), kind: RunningKind::Count }) },
+            ],
+        };
+        let totals = RunningTotals::new(&dict);
+
+        let mut vars = HashMap::new();
+        totals.apply(&HashMap::from([("d".to_string(), 0)]), &mut vars);
+        assert_eq!(vars["Total"], "10");
+        assert_eq!(vars["Count"], "1");
+
+        let mut vars = HashMap::new();
+        totals.apply(&HashMap::from([("d".to_string(), 1)]), &mut vars);
+        assert_eq!(vars["Total"], "12.50");
+        assert_eq!(vars["Count"], "2");
+
+        // A band that does not use the source (for example the page footer) shows the total.
+        let mut vars = HashMap::new();
+        totals.apply(&HashMap::new(), &mut vars);
+        assert_eq!(vars["Total"], "12.50");
+        assert_eq!(vars["Count"], "3");
     }
 }

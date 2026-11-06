@@ -1,4 +1,4 @@
-﻿//! The Data tab: edit data sources, their columns and the report variables.
+//! The Data tab: edit data sources, their columns and the report variables.
 
 use eframe::egui::{self, Id, TextEdit};
 
@@ -73,6 +73,14 @@ pub fn show(app: &mut ReportDesignerApp, ui: &mut egui::Ui) {
     ui.add_space(10.0);
     ui.label(theme::heading("Variables"));
     let mut remove_variable: Option<usize> = None;
+    // Data sources and their columns, for the running-variable pickers.
+    let sources: Vec<(String, Vec<String>)> = app
+        .report
+        .dictionary
+        .data_sources
+        .iter()
+        .map(|d| (d.name.clone(), d.columns.iter().map(|c| c.name.clone()).collect()))
+        .collect();
     for (vi, var) in app.report.dictionary.variables.iter_mut().enumerate() {
         ui.horizontal(|ui| {
             changed |= ui.add(TextEdit::singleline(&mut var.name).desired_width(110.0)).changed();
@@ -86,8 +94,56 @@ pub fn show(app: &mut ReportDesignerApp, ui: &mut egui::Ui) {
                 remove_variable = Some(vi);
             }
         });
-    }
-    add_variable_row(app, ui);
+        ui.horizontal(|ui| {
+            let mode_label = match &var.running {
+                None => "Static",
+                Some(r) if r.kind == RunningKind::Sum => "Running sum",
+                Some(_) => "Running count",
+            };
+            egui::ComboBox::from_id_salt(("var_mode", vi)).selected_text(mode_label).width(110.0).show_ui(ui, |ui| {
+                let (first_source, first_column) = sources
+                    .first()
+                    .map(|(s, cols)| (s.clone(), cols.first().cloned().unwrap_or_default()))
+                    .unwrap_or_default();
+                if ui.selectable_label(var.running.is_none(), "Static").clicked() {
+                    var.running = None;
+                    changed = true;
+                }
+                for (label, kind) in [("Running sum", RunningKind::Sum), ("Running count", RunningKind::Count)] {
+                    let selected = var.running.as_ref().is_some_and(|r| r.kind == kind);
+                    if ui.selectable_label(selected, label).clicked() {
+                        let keep = var.running.take();
+                        var.running = Some(Running {
+                            source: keep.as_ref().map(|r| r.source.clone()).unwrap_or_else(|| first_source.clone()),
+                            column: keep.as_ref().map(|r| r.column.clone()).unwrap_or_else(|| first_column.clone()),
+                            kind,
+                        });
+                        changed = true;
+                    }
+                }
+            });
+            if let Some(run) = var.running.as_mut() {
+                let columns = sources.iter().find(|(s, _)| *s == run.source).map(|(_, c)| c.clone()).unwrap_or_default();
+                egui::ComboBox::from_id_salt(("var_source", vi)).selected_text(run.source.as_str()).width(110.0).show_ui(ui, |ui| {
+                    for (s, _) in &sources {
+                        if ui.selectable_value(&mut run.source, s.clone(), s.as_str()).changed() {
+                            run.column = sources.iter().find(|(n, _)| n == s).and_then(|(_, c)| c.first().cloned()).unwrap_or_default();
+                            changed = true;
+                        }
+                    }
+                });
+                if run.kind == RunningKind::Sum {
+                    egui::ComboBox::from_id_salt(("var_column", vi)).selected_text(run.column.as_str()).width(110.0).show_ui(ui, |ui| {
+                        for c in &columns {
+                            if ui.selectable_value(&mut run.column, c.clone(), c.as_str()).changed() {
+                                changed = true;
+                            }
+                        }
+                    });
+                }
+            }
+        });
+    }    add_variable_row(app, ui);
 
     // Apply the actions collected above.
     if let Some(si) = remove_source {
@@ -153,6 +209,7 @@ fn add_variable_row(app: &mut ReportDesignerApp, ui: &mut egui::Ui) {
                 name: variable,
                 value: String::new(),
                 var_type: "System.String".into(),
+                running: None,
             });
             app.refresh_code_buffer();
         }
