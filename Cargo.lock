@@ -2124,7 +2124,7 @@ dependencies = [
 
 [[package]]
 name = "nusantara_report_designer"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "barcoders",
  "base64",
